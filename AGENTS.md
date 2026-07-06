@@ -249,6 +249,8 @@ AIDetection/
 | 文件为空 | `src/utils/osd.py` | 🟡 未实现 | OSD 绘图工具缺失 |
 | 文件为空 | `src/stream/stream.py` | 🟡 未实现 | — |
 | `main.py` 不完整 | `main.py` | 🟡 开发中 | 仅打印任务列表，未串联完整流程 |
+| YOLO 预检测空结果跳过任务 | `src/core/stream_worker.py` | 🟢 已修复 | 当 YOLO 未检测到目标时仍继续进入分析流程，仅跳过 SAM3 调用，以支持时间累计类算法 |
+| SAM3/YOLO 空结果跳过分析 | `src/core/stream_worker.py` | 🟢 已修复 | 即使当前帧未检测到任何目标，也会对每个 ready 任务调用分析器，确保时间累计状态被更新 |
 
 ---
 

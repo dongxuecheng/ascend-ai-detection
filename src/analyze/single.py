@@ -45,6 +45,7 @@ class SingleDetector:
         self.latch = latch
 
         # device_id -> 状态字典
+        # 状态字段：start_time（计时开始时间）、triggered（是否已触发）
         self._states: Dict[str, dict] = {}
         self._lock = threading.Lock()
 
@@ -120,7 +121,9 @@ class SingleDetector:
         with self._lock:
             state = self._states.get(key)
 
-            # 只要当前帧人数不是 1，就重置计时/触发状态
+            # 只要当前帧人数不是 1，就重置计时/触发状态。
+            # 即使 YOLO/SAM3 当前帧没有检测到人（count == 0），也会进入此分支重置状态，
+            # 确保时间累计类逻辑在空输入时仍然被正确执行一遍。
             if count != 1:
                 self._states[key] = {"start_time": None, "triggered": False}
                 return []

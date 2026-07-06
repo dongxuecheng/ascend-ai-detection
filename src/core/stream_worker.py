@@ -224,17 +224,20 @@ class StreamWorker(threading.Thread):
             logger.error(f"[恢复] 重建视频流异常: {self.rtsp_url}, {e}", exc_info=True)
             return False
 
-    def _pre_detect_with_yolo(self, frame, tasks: List) -> Tuple[List, List[Box]]:
+    def _pre_detect_with_yolo(self, frame, tasks: List) -> Tuple[List, List[Box], set]:
         """
         使用 YOLO 模型对任务进行预检测。
-        如果 YOLO 没有检测到任务配置的类别，则跳过该任务（不调用 SAM3）。
+
+        注意：即使 YOLO 没有检测到任务配置的类别，也**不会**跳过该任务，而是仅跳过 SAM3 调用，
+        让任务继续进入分析流程。因为部分算法（如单人作业/单人滞留）依赖时间累计，空输入时
+        也需要走一遍逻辑推理以更新内部状态。
 
         :param frame: 当前视频帧
         :param tasks: 待检测的任务列表
-        :return: (通过预检测的任务列表, YOLO 检测到的 Box 列表[格式同 SAM3])
+        :return: (通过预检测的任务列表, YOLO 检测到的 Box 列表[格式同 SAM3], 需跳过 SAM3 的任务 ID 集合)
         """
         if not tasks:
-            return [], []
+            return [], [], set()
 
         # 收集每个任务所需的 YOLO 预检测配置
         # 结构: [(task, model_name, required_classes), ...]
@@ -254,7 +257,7 @@ class StreamWorker(threading.Thread):
         # 如果没有任务需要预检测，全部通过
         yolo_required = [(t, m, c) for t, m, c in task_configs if m is not None]
         if not yolo_required:
-            return tasks, []
+            return tasks, [], set()
 
         # 收集每个模型需要的类别（按模型去重，合并所有任务的类别需求）
         # model_name -> set(类别名)
@@ -302,17 +305,19 @@ class StreamWorker(threading.Thread):
 
         # 判断每个任务是否通过预检测
         passed_tasks = []
+        skip_sam3_task_ids = set()  # YOLO 未检测到目标、需要跳过 SAM3 的任务 ID
         now = time.time()
         for task, model_name, required_classes in task_configs:
+            # 即使 YOLO 没有检测到目标，也要让任务进入后续分析流程（支持时间累计类算法）
+            passed_tasks.append(task)
+
             if model_name is None:
-                # 未配置预检测，直接通过
-                passed_tasks.append(task)
+                # 未配置预检测，直接调用 SAM3
                 continue
 
             boxes = yolo_results.get(model_name)
             if boxes is None:
                 # YOLO 客户端不可用，跳过预检测直接调用 SAM3
-                passed_tasks.append(task)
                 logger.info(f"YOLO 客户端不可用，跳过预检测 task={task.id}, algo={task.algorithmCode}")
                 continue
 
@@ -323,13 +328,16 @@ class StreamWorker(threading.Thread):
 
             if has_target:
                 matched = [cls for cls in required_classes if cls in detected_labels]
-                passed_tasks.append(task)
                 logger.info(f"YOLO 预检测通过 task={task.id}, algo={task.algorithmCode}, 匹配到: {matched}")
                 # 更新运行时间，避免该任务立即再次进入 ready 状态
                 with self.lock:
                     self.task_last_run[task.id] = now
+            else:
+                # YOLO 未检测到目标，跳过 SAM3 以节省资源，但仍进入分析流程更新时间累计状态
+                skip_sam3_task_ids.add(task.id)
+                logger.info(f"YOLO 预检测未通过 task={task.id}, algo={task.algorithmCode}, 跳过 SAM3 但仍继续分析")
 
-        return passed_tasks, all_yolo_boxes
+        return passed_tasks, all_yolo_boxes, skip_sam3_task_ids
 
     def stop(self):
         """请求 worker 线程停止。
@@ -465,8 +473,8 @@ class StreamWorker(threading.Thread):
 
                 # 3. YOLO 预检测：未检测到目标则跳过 SAM3
                 t_yolo_start = time.time()
-                ready_tasks, yolo_boxes = self._pre_detect_with_yolo(frame, ready_tasks)
-                logger.debug(f"预检测完成 | 通过预检测的任务数={len(ready_tasks)}, YOLO 检测到的框数={len(yolo_boxes)}")
+                ready_tasks, yolo_boxes, skip_sam3_task_ids = self._pre_detect_with_yolo(frame, ready_tasks)
+                logger.debug(f"预检测完成 | 通过预检测的任务数={len(ready_tasks)}, YOLO 检测到的框数={len(yolo_boxes)}, 跳过 SAM3 的任务数={len(skip_sam3_task_ids)}")
                 t_yolo_end = time.time()
                 if not ready_tasks:
                     continue
@@ -474,6 +482,8 @@ class StreamWorker(threading.Thread):
                 # 4. 按 SAM3 URL 分组，每组分别请求 SAM3
                 sam3_groups: Dict[str, List] = {}
                 for task in ready_tasks:
+                    if task.id in skip_sam3_task_ids:
+                        continue
                     algo_code = str(task.algorithmCode)
                     url = config.ALGORITHM_SAM3_URL.get(algo_code, config.SAM3_URL_OBJ)
                     sam3_groups.setdefault(url, []).append(task)
@@ -523,11 +533,10 @@ class StreamWorker(threading.Thread):
                         all_boxes.extend(merged)
                         logger.info(f"YOLO 框合并 | 补充类别: {set([b.label for b in merged])}, 合并后总框数={len(all_boxes)}")
 
+                # 即使 SAM3/YOLO 都没有检测到任何目标，也要对每个任务走一遍分析逻辑。
+                # 部分算法（如单人作业/单人滞留）依赖时间累计，空输入时需要更新内部状态。
                 if not all_boxes:
-                    with self.lock:
-                        for task in ready_tasks:
-                            self.task_last_run[task.id] = now
-                    continue
+                    logger.info(f"当前帧未检测到任何目标，仍继续分析 | ready_tasks={[t.id for t in ready_tasks]}")
 
                 # 5. 各任务独立分析并上报
                 t_analyze_start = time.time()
@@ -535,7 +544,7 @@ class StreamWorker(threading.Thread):
                 with self.lock:
                     for task in ready_tasks:
                         try:
-                            logger.info(f"开始分析 task={task.id}, algo={task.algorithmCode}")
+                            logger.info(f"开始分析 task={task.id}, algo={task.algorithmCode}, input_boxes={len(all_boxes)}")
                             fences = self._get_fences_for_task(task)
                             image_width = frame.shape[1]
                             image_height = frame.shape[0]
