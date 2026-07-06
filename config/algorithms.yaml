@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['8', '34']
+supported_codes: ['8', '34','14']
 code_descriptions:
 - code: '0'
   descriptions: 未戴安全帽
@@ -141,6 +141,7 @@ yolo_model_configs:
 yolo_pre_detect:
 - {code: '8', yolo11_plan: [person]}
 - {code: '34', yolo11_plan: [person]}
+- {code: '14', yolo11_plan: [person]}
 
 algorithm_detectors:
 - {code: '0', detectors: [HelmetDetector]}
@@ -152,6 +153,25 @@ algorithm_detectors:
 - {code: '201', detectors: [HelmetDetector, ExposedArmLegDetector, GloveDetector]}
 - {code: '204', detectors: [ZoneDetector]}
 - {code: '205', detectors: [SafetyDetector]}
+
+# 分类模型配置（用于对规则引擎检出的违规目标进行二次确认）
+classification_configs:
+- name: resnet_smoke
+  model_name: resnet_smoke
+  input_name: images
+  output_name: output0
+  input_size: 224
+  labels: [normal, smoking]
+  conf_thresh: 0.5
+  target_class: smoking
+  expand_ratio: 2.0
+  # 与 PyTorch 预处理对齐：ToTensor + Normalize
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+# 算法码 -> 需要调用的分类器名称列表
+algorithm_classifiers:
+- {code: '14', classifiers: [resnet_smoke]}
 
 alert_dedup:
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}

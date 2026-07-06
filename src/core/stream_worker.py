@@ -16,6 +16,7 @@ from detect.triton_client_fast import YOLOTritonFast
 # 全局单例：电子围栏管理器
 task_fence = TaskFence()
 from core.analyzer import analyze_for_task, merge_prompts_for_tasks
+from core.classifier import classify_for_task
 from llm.vl_analyzer import vl_analyze_for_task
 from utils.osd import render_alert_frame
 from utils.alert_dedup import AlertDedup
@@ -517,6 +518,16 @@ class StreamWorker(threading.Thread):
                             logger.info(f"分析完成 task={task.id}, 规则引擎违规数={len(violations)}")
                             if len(violations) == 0:
                                 # 即使没有违规，也记录分析时间，避免频繁进入 ready 状态
+                                self.task_last_run[task.id] = now
+                                continue
+
+                            # 分类器二次确认（如吸烟检测后调用 resnet_smoke 分类模型）
+                            violations = classify_for_task(
+                                frame, task, violations,
+                                image_width=image_width, image_height=image_height
+                            )
+                            logger.info(f"分类过滤完成 task={task.id}, 剩余违规数={len(violations)}")
+                            if len(violations) == 0:
                                 self.task_last_run[task.id] = now
                                 continue
 

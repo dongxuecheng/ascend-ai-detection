@@ -147,6 +147,23 @@ class BaseConfig(BaseModel):
         if isinstance(_item, dict) and "code" in _item
     }
 
+    # 分类模型配置（统一格式：列表，每项含 name + 模型参数）
+    _raw_cls_configs: List[dict] = _ALGO_CONFIG.get("classification_configs", [])
+    CLASSIFICATION_MODEL_CONFIGS: Dict[str, dict] = {}
+    for _cls_cfg in _raw_cls_configs:
+        if not isinstance(_cls_cfg, dict) or "name" not in _cls_cfg:
+            continue
+        _cls_name = str(_cls_cfg["name"])
+        CLASSIFICATION_MODEL_CONFIGS[_cls_name] = {k: v for k, v in _cls_cfg.items() if k != "name"}
+
+    # 算法代码 -> 分类器名称列表（在 core/classifier.py 中使用）
+    _classifier_raw: List[dict] = _ALGO_CONFIG.get("algorithm_classifiers", [])
+    ALGORITHM_CLASSIFIERS: Dict[str, List[str]] = {
+        str(_item.get("code")): [str(cls) for cls in _item.get("classifiers", [])]
+        for _item in _classifier_raw
+        if isinstance(_item, dict) and "code" in _item
+    }
+
     # 算法代码 -> 报警去重配置
     _dedup_raw: List[dict] = _ALGO_CONFIG.get("alert_dedup", [])
     ALERT_DEDUP_CONFIG: Dict[str, Dict] = {}
