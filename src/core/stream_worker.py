@@ -471,32 +471,57 @@ class StreamWorker(threading.Thread):
                 if not ready_tasks:
                     continue
 
-                # 4. 合并 prompt，只请求一次 SAM3
-                merged_prompts, return_mask = merge_prompts_for_tasks(ready_tasks)
-                
-                if merged_prompts:
+                # 4. 按 SAM3 URL 分组，每组分别请求 SAM3
+                sam3_groups: Dict[str, List] = {}
+                for task in ready_tasks:
+                    algo_code = str(task.algorithmCode)
+                    url = config.ALGORITHM_SAM3_URL.get(algo_code, config.SAM3_URL_OBJ)
+                    sam3_groups.setdefault(url, []).append(task)
+
+                all_boxes: List[Box] = []
+                has_sam3_prompt = False
+                for url, group_tasks in sam3_groups.items():
+                    merged_prompts, return_mask = merge_prompts_for_tasks(group_tasks)
+                    if not merged_prompts:
+                        logger.warning(
+                            f"没有可用的 SAM3 prompt | URL={url}, "
+                            f"tasks={[t.id for t in group_tasks]}"
+                        )
+                        continue
+
+                    has_sam3_prompt = True
                     t_sam3_start = time.time()
-                    logger.info(f"SAM3 请求 | Prompts: {merged_prompts}, return_mask={return_mask}")
-                    all_boxes = call_sam3(frame, merged_prompts, confidence_threshold=0.5, return_mask=return_mask)
+                    logger.info(f"SAM3 请求 | URL={url} | Prompts: {merged_prompts}, return_mask={return_mask}")
+                    boxes = call_sam3(
+                        frame, merged_prompts,
+                        confidence_threshold=0.5,
+                        return_mask=return_mask,
+                        url=url,
+                    )
                     t_sam3_end = time.time()
 
                     # 统计 SAM3 返回的类别
                     label_counts = {}
-                    for b in all_boxes:
+                    for b in boxes:
                         label_counts[b.label] = label_counts.get(b.label, 0) + 1
-                    logger.info(f"SAM3 返回 | 总框数={len(all_boxes)}, 类别分布={label_counts}")
+                    logger.info(
+                        f"SAM3 返回 | URL={url} | 总框数={len(boxes)}, "
+                        f"类别分布={label_counts} | 耗时={(t_sam3_end-t_sam3_start)*1000:.1f}ms"
+                    )
+                    all_boxes.extend(boxes)
 
-                    # 按需合并 YOLO 框（补充 SAM3 缺失的类别）
-                    needs_yolo_merge = any(str(t.algorithmCode) in config.USE_YOLO_BOXES for t in ready_tasks)
-                    if needs_yolo_merge and yolo_boxes:
-                        sam_labels = {b.label for b in all_boxes}
-                        merged = [yb for yb in yolo_boxes if yb.label not in sam_labels]
-                        if merged:
-                            all_boxes.extend(merged)
-                            logger.info(f"YOLO 框合并 | 补充类别: {set([b.label for b in merged])}, 合并后总框数={len(all_boxes)}")
-                else:
-                    logger.warning(f"没有可用的 SAM3 prompt, tasks={[t.id for t in ready_tasks]}, 使用yolo结果进行分析")
-                    all_boxes = yolo_boxes  # 没有 SAM3 prompt，使用 YOLO 结果（可能为空）
+                if not has_sam3_prompt and yolo_boxes:
+                    logger.warning(f"所有任务均无 SAM3 prompt, tasks={[t.id for t in ready_tasks]}, 使用yolo结果进行分析")
+                    all_boxes = list(yolo_boxes)
+
+                # 按需合并 YOLO 框（补充 SAM3 缺失的类别）
+                needs_yolo_merge = any(str(t.algorithmCode) in config.USE_YOLO_BOXES for t in ready_tasks)
+                if has_sam3_prompt and needs_yolo_merge and yolo_boxes:
+                    sam_labels = {b.label for b in all_boxes}
+                    merged = [yb for yb in yolo_boxes if yb.label not in sam_labels]
+                    if merged:
+                        all_boxes.extend(merged)
+                        logger.info(f"YOLO 框合并 | 补充类别: {set([b.label for b in merged])}, 合并后总框数={len(all_boxes)}")
 
                 if not all_boxes:
                     with self.lock:
@@ -577,8 +602,9 @@ class StreamWorker(threading.Thread):
                                 alert_context = {
                                     'nvr_ip': task.deviceAlgorithmIp or '0.0.0.0',
                                     'channel': task.deviceChannel or '1',
+                                    'task_id': task.id,
                                 }
-                                uploader.add_alert(alert_frame, alert_context, task.algorithmCode)
+                                uploader.add_alert(alert_frame, frame, alert_context, task.algorithmCode)
                                 logger.info(f"✅ 已加入上传队列 task={task.id}")
                             else:
                                 logger.debug(f"无违规 task={task.id}")

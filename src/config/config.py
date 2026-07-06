@@ -73,6 +73,9 @@ class BaseConfig(BaseModel):
     # 流恢复：两次重建之间的最小冷却（秒）
     STREAM_RECOVERY_COOLDOWN_SEC: float = 10.0
 
+    # 违章原图本地保存根目录
+    VIOLATION_IMAGE_SAVE_DIR: str = "/mnt/yolo/images"
+
     TRITON_YOLO_URL: str = "192.168.100.74:38000"
 
     # ---- VL 大模型配置 ----
@@ -86,6 +89,14 @@ class BaseConfig(BaseModel):
     # ---- 算法相关配置：必须从 algorithms.yaml 读取，无默认值 ----
     ALGORITHM_CODES: List[str] = _ALGO_CONFIG["supported_codes"]
 
+    # 解析 code_descriptions，用于本地保存时按类别分目录
+    _code_desc_raw: List[dict] = _ALGO_CONFIG.get("code_descriptions", [])
+    CODE_DESCRIPTIONS: Dict[str, str] = {
+        str(_item.get("code")): str(_item.get("descriptions", ""))
+        for _item in _code_desc_raw
+        if isinstance(_item, dict) and "code" in _item
+    }
+
     # 解析 sam3_prompts（新格式：列表，每项含 code/prompts/return_mask）
     _sam3_prompts_raw: List[dict] = _ALGO_CONFIG.get("sam3_prompts", [])
     ALGORITHM_SAM3_PROMPT: Dict[str, List[str]] = {}
@@ -95,6 +106,14 @@ class BaseConfig(BaseModel):
             _code = str(_item["code"])
             ALGORITHM_SAM3_PROMPT[_code] = _item.get("prompts", [])
             ALGORITHM_SAM3_RETURN_MASK[_code] = _item.get("return_mask", False)
+
+    # 解析 sam3_urls（统一格式：列表，每项含 code/url；未配置则回退到 SAM3_URL_OBJ）
+    _sam3_urls_raw: List[dict] = _ALGO_CONFIG.get("sam3_urls", [])
+    ALGORITHM_SAM3_URL: Dict[str, str] = {
+        str(_item.get("code")): str(_item.get("url"))
+        for _item in _sam3_urls_raw
+        if isinstance(_item, dict) and "code" in _item and "url" in _item
+    }
 
     # 解析 fence_algorithms（统一格式：列表，每项含 code）
     _fence_raw: List[dict] = _ALGO_CONFIG.get("fence_algorithms", [])

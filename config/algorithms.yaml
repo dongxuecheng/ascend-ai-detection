@@ -115,6 +115,11 @@ sam3_prompts:
   prompts: [head, helmet, hard hat, person, hand, glove, industrial glove, skin, arm,
     person leg]
   return_mask: true
+sam3_urls:
+- {code: '8', url: 'http://192.168.100.75:18002/predict'}
+- {code: '14', url: 'http://192.168.100.75:18002/predict-person-about-small-object'}
+- {code: '34', url: 'http://192.168.100.75:18003/predict'}
+
 fence_algorithms:
 - {code: '8'}
 
@@ -158,10 +163,10 @@ algorithm_detectors:
 classification_configs:
 - name: resnet_smoke
   model_name: resnet_smoke
-  input_name: images
-  output_name: output0
+  input_name: input
+  output_name: output
   input_size: 224
-  labels: [normal, smoking]
+  labels: [smoking, normal]
   conf_thresh: 0.5
   target_class: smoking
   expand_ratio: 2.0

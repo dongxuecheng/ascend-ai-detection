@@ -33,6 +33,7 @@ def call_sam3(
     pre_detect_labels: Optional[List[str]] = None,
     merge_results: bool = True,
     crop_config: Optional[dict] = None,
+    url: Optional[str] = None,
 ) -> List[Box]:
     """
     调用 SAM3 推理服务，返回检测框列表
@@ -44,6 +45,7 @@ def call_sam3(
     :param pre_detect_labels: 预检测标签列表，默认从 prompts 推断（取第一个）
     :param merge_results: 是否合并结果，默认 True
     :param crop_config: 裁剪配置字典，默认使用 DEFAULT_CROP_CONFIG
+    :param url: 自定义 SAM3 接口地址；为空时使用 config.SAM3_URL_OBJ
     :return: Box 对象列表
     """
     if not prompts:
@@ -81,10 +83,11 @@ def call_sam3(
         }
 
         # 6. 发送请求
+        effective_url = url if url else config.SAM3_URL_OBJ
         t_http_start = time.time()
-        resp = requests.post(config.SAM3_URL_OBJ, json=payload, timeout=30)
+        resp = requests.post(effective_url, json=payload, timeout=30)
         t_http_end = time.time()
-        logger.info(f"SAM3 HTTP 请求耗时: {(t_http_end-t_http_start)*1000:.1f}ms | URL={config.SAM3_URL_OBJ}")
+        logger.info(f"SAM3 HTTP 请求耗时: {(t_http_end-t_http_start)*1000:.1f}ms | URL={effective_url}")
         resp.raise_for_status()
         data = resp.json()
         return parse_sam3_response(data)

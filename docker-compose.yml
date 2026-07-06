@@ -52,6 +52,8 @@ services:
       # 挂载当前目录代码到容器中运行
       - .:/app
       - /dev/shm:/dev/shm
+      # 违章原图本地保存目录：按类别和日期落盘
+      - /mnt/yolo/images:/mnt/yolo/images
       # 同步宿主机时区，避免容器内时间/日志时间不对
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
