@@ -1,0 +1,158 @@
+_comment: AI 视频安监检测算法配置，修改后重启代码即可生效
+supported_codes: ['8', '34']
+code_descriptions:
+- code: '0'
+  descriptions: 未戴安全帽
+- code: '8'
+  descriptions: 危险区域闯入
+- code: '10'
+  descriptions: 未穿工服或反光衣
+- code: '14'
+  descriptions: 吸烟
+- code: '16'
+  descriptions: 火焰识别
+- code: '32'
+  descriptions: 睡岗
+- code: '33'
+  descriptions: 皮带跑偏
+- code: '34'
+  descriptions: 单人作业
+- code: '37'
+  descriptions: 操作台异物
+- code: '38'
+  descriptions: 脱岗
+- code: '39'
+  descriptions: 定时巡检
+- code: '49'
+  descriptions: 堆煤
+- code: '50'
+  descriptions: 煤流异物检测
+- code: '52'
+  descriptions: 车辆检测
+- code: '53'
+  descriptions: 灭火器识别
+- code: '54'
+  descriptions: 穿越火车
+- code: '55'
+  descriptions: 人员跟踪
+- code: '56'
+  descriptions: 玩手机
+- code: '57'
+  descriptions: 移动中使用手机
+- code: '58'
+  descriptions: 安全带
+- code: '59'
+  descriptions: 空车检查
+sam3_prompts:
+- code: '0'
+  prompts: [head, helmet, hard hat, person]
+  return_mask: false
+- code: '8'
+  prompts: [person]
+  return_mask: false
+- code: '10'
+  prompts: [person, work clothes, reflective vest, uniform]
+  return_mask: false
+- code: '14'
+  prompts: [cigarette, person, hand, head]
+  return_mask: false
+- code: '16'
+  prompts: [fire, flame]
+  return_mask: false
+- code: '32'
+  prompts: [person, head]
+  return_mask: false
+- code: '33'
+  prompts: [conveyor belt]
+  return_mask: false
+- code: '34'
+  prompts: [person]
+  return_mask: false
+- code: '37'
+  prompts: [foreign object, object]
+  return_mask: false
+- code: '38'
+  prompts: [person]
+  return_mask: false
+- code: '39'
+  prompts: [person]
+  return_mask: false
+- code: '49'
+  prompts: [coal pile, coal]
+  return_mask: false
+- code: '50'
+  prompts: [foreign object, coal]
+  return_mask: false
+- code: '52'
+  prompts: [person, leg, truck bed]
+  return_mask: false
+- code: '53'
+  prompts: [fire extinguisher]
+  return_mask: false
+- code: '54'
+  prompts: [person, train]
+  return_mask: false
+- code: '55'
+  prompts: [person]
+  return_mask: false
+- code: '56'
+  prompts: [person, hand, mobile phone, phone]
+  return_mask: false
+- code: '57'
+  prompts: [person, hand, mobile phone, phone]
+  return_mask: false
+- code: '58'
+  prompts: [person, harness, rolled safety rope, safety rope, elevating work platform,
+    metal structure]
+  return_mask: true
+- code: '59'
+  prompts: [vehicle, truck, cargo]
+  return_mask: false
+- code: '200'
+  prompts: [person, hand, glove, face shield, face]
+  return_mask: false
+- code: '201'
+  prompts: [head, helmet, hard hat, person, hand, glove, industrial glove, skin, arm,
+    person leg]
+  return_mask: true
+fence_algorithms:
+- {code: '8'}
+
+use_yolo_boxes:
+- {code: '200'}
+
+yolo_model_configs:
+- name: yolo11_plan
+  input_name: images
+  output_name: output0
+  input_size: 640
+  output_format: yolo_v8_v11
+  conf_thresh: 0.5
+  iou_thresh: 0.45
+  label_map_file: config/coco.names
+- name: yolo12s_face
+  input_name: images
+  output_name: output0
+  input_size: 1280
+  output_format: yolo_v8_v11
+  conf_thresh: 0.3
+  iou_thresh: 0.45
+  label_map_file: config/yolo12s_face.names
+yolo_pre_detect:
+- {code: '8', yolo11_plan: [person]}
+- {code: '34', yolo11_plan: [person]}
+
+algorithm_detectors:
+- {code: '0', detectors: [HelmetDetector]}
+- {code: '8', detectors: [ZoneDetector]}
+- {code: '14', detectors: [SmokingDetector]}
+- {code: '34', detectors: [SingleDetector]}
+- {code: '58', detectors: [SafetyDetector]}
+- {code: '200', detectors: [GloveDetector, ShieldDetector]}
+- {code: '201', detectors: [HelmetDetector, ExposedArmLegDetector, GloveDetector]}
+- {code: '204', detectors: [ZoneDetector]}
+- {code: '205', detectors: [SafetyDetector]}
+
+alert_dedup:
+- {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '34', enabled: true, cooldown_seconds: 300}
