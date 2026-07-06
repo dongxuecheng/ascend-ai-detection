@@ -63,7 +63,7 @@ class ZoneDetector:
 
         person_boxes = label_filter(predictions, ['person'])
         person_boxes = area_filter(person_boxes, 1000.0)
-        person_boxes = score_filter(person_boxes, 0.5)
+        person_boxes = score_filter(person_boxes, 0.8)
 
         for person in person_boxes:
             for fence in fence_polygons:

@@ -28,7 +28,7 @@ class SmokingDetector:
         person_min_area: float = 1000.0,
         hand_min_score: float = 0.5,
         head_min_score: float = 0.5,
-        cigarette_min_score: float = 0.5,
+        cigarette_min_score: float = 0.7,
         min_iom: float = 0.0,
         alarm_on_head: bool = True,
     ):

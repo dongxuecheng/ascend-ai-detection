@@ -26,7 +26,7 @@ class SingleDetector:
     def __init__(
         self,
         duration_seconds: float = 300,
-        min_score: float = 0.5,
+        min_score: float = 0.8,
         min_area: float = 1000.0,
         nms_iou: float = 0.5,
         latch: bool = True,
