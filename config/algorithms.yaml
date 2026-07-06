@@ -118,7 +118,7 @@ sam3_prompts:
 sam3_urls:
 - {code: '8', url: 'http://192.168.100.75:18002/predict'}
 - {code: '14', url: 'http://192.168.100.75:18002/predict-person-about-small-object'}
-- {code: '34', url: 'http://192.168.100.75:18003/predict'}
+- {code: '34', url: 'http://192.168.100.75:18002/predict'}
 
 fence_algorithms:
 - {code: '8'}
@@ -180,4 +180,5 @@ algorithm_classifiers:
 
 alert_dedup:
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
 - {code: '34', enabled: true, cooldown_seconds: 300}

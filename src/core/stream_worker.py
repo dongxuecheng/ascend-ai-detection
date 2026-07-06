@@ -335,7 +335,7 @@ class StreamWorker(threading.Thread):
             else:
                 # YOLO 未检测到目标，跳过 SAM3 以节省资源，但仍进入分析流程更新时间累计状态
                 skip_sam3_task_ids.add(task.id)
-                logger.info(f"YOLO 预检测未通过 task={task.id}, algo={task.algorithmCode}, 跳过 SAM3 但仍继续分析")
+                logger.debug(f"YOLO 预检测未通过 task={task.id}, algo={task.algorithmCode}, 跳过 SAM3 但仍继续分析")
 
         return passed_tasks, all_yolo_boxes, skip_sam3_task_ids
 
@@ -490,6 +490,7 @@ class StreamWorker(threading.Thread):
 
                 all_boxes: List[Box] = []
                 has_sam3_prompt = False
+                t_sam3_start = t_sam3_end = 0.0  # 当没有 SAM3 请求时避免 UnboundLocalError
                 for url, group_tasks in sam3_groups.items():
                     merged_prompts, return_mask = merge_prompts_for_tasks(group_tasks)
                     if not merged_prompts:
@@ -536,7 +537,7 @@ class StreamWorker(threading.Thread):
                 # 即使 SAM3/YOLO 都没有检测到任何目标，也要对每个任务走一遍分析逻辑。
                 # 部分算法（如单人作业/单人滞留）依赖时间累计，空输入时需要更新内部状态。
                 if not all_boxes:
-                    logger.info(f"当前帧未检测到任何目标，仍继续分析 | ready_tasks={[t.id for t in ready_tasks]}")
+                    logger.debug(f"当前帧未检测到任何目标，仍继续分析 | ready_tasks={[t.id for t in ready_tasks]}")
 
                 # 5. 各任务独立分析并上报
                 t_analyze_start = time.time()
@@ -544,12 +545,16 @@ class StreamWorker(threading.Thread):
                 with self.lock:
                     for task in ready_tasks:
                         try:
-                            logger.info(f"开始分析 task={task.id}, algo={task.algorithmCode}, input_boxes={len(all_boxes)}")
+                            if len(all_boxes) == 0:
+                                logger.debug(f"当前帧未检测到任何目标，仍继续分析 task={task.id}, algo={task.algorithmCode}")
+                            else:
+                                logger.info(f"开始分析 task={task.id}, algo={task.algorithmCode}, input_boxes={len(all_boxes)}")
                             fences = self._get_fences_for_task(task)
                             image_width = frame.shape[1]
                             image_height = frame.shape[0]
                             violations = analyze_for_task(all_boxes, task, fences=fences, image_width=image_width, image_height=image_height)
-                            logger.info(f"分析完成 task={task.id}, 规则引擎违规数={len(violations)}")
+                            if len(all_boxes) > 0 and len(violations) > 0:
+                                logger.info(f"分析完成 task={task.id}, 规则引擎违规数={len(violations)}")
                             if len(violations) == 0:
                                 # 即使没有违规，也记录分析时间，避免频繁进入 ready 状态
                                 self.task_last_run[task.id] = now

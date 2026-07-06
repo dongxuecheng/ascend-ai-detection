@@ -49,13 +49,19 @@ def _parse_shm_filename(name: str, prefix: str):
     解析共享内存文件名，返回 (hostname, pid) 或 (None, None)。
     支持新格式：aidet_model_input_hostname_pid_tid
     兼容旧格式：aidet_model_input_pid_tid
+
+    对于不符合上述格式或 pid 非数字的遗留文件，返回 (None, None)，由调用方按
+    跨容器/旧格式策略兜底清理，避免因格式异常导致客户端创建失败。
     """
     rest = name[len(prefix):]
     parts = rest.split("_")
-    if len(parts) == 3:
-        return parts[0], int(parts[1])
-    elif len(parts) == 2:
-        return None, int(parts[0])
+    try:
+        if len(parts) == 3:
+            return parts[0], int(parts[1])
+        elif len(parts) == 2:
+            return None, int(parts[0])
+    except ValueError:
+        pass
     return None, None
 
 

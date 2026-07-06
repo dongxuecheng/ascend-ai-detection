@@ -75,11 +75,11 @@ def analyze_for_task(boxes: List[Box], task, fences=None, image_width: int = 0, 
     label_counts = {}
     for b in boxes:
         label_counts[b.label] = label_counts.get(b.label, 0) + 1
-
-    logger.info(
-        f"[device={device_id}] analyze_for_task 开始 | "
-        f"task_name={task_name}, algo={algo_code}, 输入框总数={len(boxes)}, 类别分布={label_counts}"
-    )
+    if len(boxes) > 0:
+        logger.info(
+            f"[device={device_id}] analyze_for_task 开始 | "
+            f"task_name={task_name}, algo={algo_code}, 输入框总数={len(boxes)}, 类别分布={label_counts}"
+        )
 
     if algo_code not in detectors:
         logger.warning(f"[device={device_id}] analyze_for_task 未找到算法对应的检测器，algo_code={algo_code}")
@@ -89,7 +89,8 @@ def analyze_for_task(boxes: List[Box], task, fences=None, image_width: int = 0, 
         for detector in detectors[algo_code]:
             try:
                 detector_result = detector.detect(boxes, fences=fences, device_id=device_id, image_width=image_width, image_height=image_height)
-                logger.info(f"[device={device_id}] analyze_for_task 检测器 {detector.__class__.__name__} 返回 {len(detector_result)} 个违规目标")
+                if len(boxes) > 0:
+                    logger.info(f"[device={device_id}] analyze_for_task 检测器 {detector.__class__.__name__} 返回 {len(detector_result)} 个违规目标")
                 result.extend(detector_result)
             except Exception as e:
                 logger.error(f"[device={device_id}] analyze_for_task 检测器 {detector.__class__.__name__} 运行出错: {e}")
