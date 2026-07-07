@@ -64,10 +64,10 @@ class ShieldDetector:
         """
         result = []
         
-        if device_id:
-            if device_id not in self._history:
-                self._history[device_id] = []
-            self._history[device_id].append(predictions)
+        # if device_id:
+        #     if device_id not in self._history:
+        #         self._history[device_id] = []
+        #     self._history[device_id].append(predictions)
 
         result.extend(self.detect_correct_wear_shield(predictions, fences=fences))
 

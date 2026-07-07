@@ -66,8 +66,8 @@ class ExtinguisherDetector:
         )
 
         # 保存历史状态
-        if device_id:
-            self._history[device_id] = fire_boxes
+        # if device_id:
+        #     self._history[device_id] = fire_boxes
 
         # 返回火情目标作为违规位置
         return fire_boxes

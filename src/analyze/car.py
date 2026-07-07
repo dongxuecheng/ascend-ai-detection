@@ -232,8 +232,8 @@ class CarDetector:
                 final_violators.append(p_box)
 
         # 保存历史状态
-        if device_id:
-            self._history[device_id] = final_violators
+        # if device_id:
+        #     self._history[device_id] = final_violators
 
         # 返回违规人员 + 相关 truck bed，方便前端画框
         if final_violators:

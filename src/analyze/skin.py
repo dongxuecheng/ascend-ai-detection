@@ -159,10 +159,10 @@ class ExposedArmLegDetector:
         """
         result = []
         
-        if device_id:
-            if device_id not in self._history:
-                self._history[device_id] = []
-            self._history[device_id].append(predictions)
+        # if device_id:
+        #     if device_id not in self._history:
+        #         self._history[device_id] = []
+        #     self._history[device_id].append(predictions)
 
         result.extend(self.detect_exposed_arm(predictions, fences=fences, image_width=image_width, image_height=image_height))
         result.extend(self.detect_exposed_leg(predictions, fences=fences, image_width=image_width, image_height=image_height))

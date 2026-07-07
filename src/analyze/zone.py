@@ -72,6 +72,6 @@ class ZoneDetector:
                     break
 
         # 只有指定了设备ID才保存历史状态，便于后续做时序分析（如连续多帧确认、火焰跳动检测等）
-        if device_id:
-            self._history[device_id] = result
+        # if device_id:
+        #     self._history[device_id] = result
         return result

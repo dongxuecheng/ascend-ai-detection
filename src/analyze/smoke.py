@@ -133,9 +133,9 @@ class SmokingDetector:
                 seen_ids.add(cid)
 
         # 保存历史结果
-        if device_id:
-            with self._lock:
-                self._history[device_id] = result
+        # if device_id:
+        #     with self._lock:
+        #         self._history[device_id] = result
 
         if result:
             logger.warning(
