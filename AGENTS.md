@@ -178,6 +178,18 @@ AIDetection/
   3. 检查 person 的 `bottom_center` 是否在围栏多边形内
   4. 返回入侵的 `[person]`
 
+- **`car.py`**：
+  1. 将 `Box` 的 RLE mask 解码为 `shapely.Polygon`
+  2. 筛选围栏内的 `truck bed`（凸包补全，避免车厢被遮挡成 U 型）
+  3. 筛选含 `leg` 的完整 `person`
+  4. 判断 person 与 truck bed 的 mask 重叠比例（IoA）是否超过阈值
+  5. 返回违规的 `[person]` 及现场相关的 `[truck bed]`
+
+- **`extinguisher.py`**：
+  1. 分别过滤 `person`、`fire/flame`、`extinguisher`
+  2. 当同时存在 person 和 fire/flame，且未检测到 extinguisher 时，判定为违规
+  3. 返回火情目标 `[fire/flame]` 作为违规位置
+
 ### 5. 工具层 (`utils/`)
 
 - **`obj.py`**：核心 `Box` 类。
@@ -209,7 +221,7 @@ AIDetection/
 │                           main.py                           │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
 │  │ TaskManager │  │ RTSPClient  │  │ analyze.*           │ │
-│  │ (task/...)  │  │ (stream/...)│  │ (helmet/glove/zone) │ │
+│  │ (task/...)  │  │ (stream/...)│  │ (helmet/glove/zone/car/extinguisher) │ │
 │  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘ │
 └─────────┼────────────────┼────────────────────┼────────────┘
           │                │                    │

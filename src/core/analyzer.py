@@ -12,6 +12,8 @@ from analyze.shield import ShieldDetector
 from analyze.safety import SafetyDetector
 from analyze.single import SingleDetector
 from analyze.smoke import SmokingDetector
+from analyze.car import CarDetector
+from analyze.extinguisher import ExtinguisherDetector
 
 logger = setup_logger("analyzer")
 
@@ -25,6 +27,8 @@ _DETECTOR_CLASSES = {
     "SafetyDetector": SafetyDetector,
     "SingleDetector": SingleDetector,
     "SmokingDetector": SmokingDetector,
+    "CarDetector": CarDetector,
+    "ExtinguisherDetector": ExtinguisherDetector,
 }
 
 # 检测器类名 -> 单例实例
