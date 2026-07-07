@@ -51,15 +51,15 @@ class HelmetDetector:
         result = []
         person_boxes = label_filter(predictions, ['person'])
         # person_boxes = area_filter(person_boxes, 1000.0)
-        person_boxes = score_filter(person_boxes, 0.7)
+        person_boxes = score_filter(person_boxes, 0.8)
         person_boxes = self.remove_duplicate_person(person_boxes)
 
         helmet_boxes = label_filter(predictions, ['helmet', 'hard hat', 'hat'])
         helmet_boxes = self.remove_duplicate_helmets(helmet_boxes)
 
         head_boxes = label_filter(predictions, ['head'])
-        # head_boxes = area_filter(head_boxes, 500.0)
-        # head_boxes = score_filter(head_boxes, 0.6)
+        head_boxes = area_filter(head_boxes, 1600.0)
+        head_boxes = score_filter(head_boxes, 0.85)
         head_boxes = self.remove_duplicate_heads(head_boxes)
 
         head_boxes = self.remove_duplicate_heads(head_boxes)

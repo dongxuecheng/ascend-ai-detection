@@ -441,6 +441,41 @@ class StreamWorker(threading.Thread):
                 self._recovery_attempts = 0
                 self._last_frame_at = time.time()
 
+                # 应用层日志：读取到图片，打印设备/任务信息（不改动 RTSPClient 封装）
+                try:
+                    if self.tasks:
+                        first_task = self.tasks[0]
+                        device_info = (
+                            f"deviceAlgorithmIp={first_task.deviceAlgorithmIp}, "
+                            f"deviceChannel={first_task.deviceChannel}, "
+                            f"deviceId={first_task.deviceId}, "
+                            f"deviceName={first_task.deviceName}"
+                        )
+                        task_info = [
+                            {
+                                "task_id": t.id,
+                                "algorithmCode": t.algorithmCode,
+                                "algorithmName": t.algorithmName,
+                            }
+                            for t in self.tasks
+                        ]
+                    else:
+                        device_info = "deviceAlgorithmIp=None, deviceChannel=None, deviceId=None, deviceName=None"
+                        task_info = []
+
+                    # 避免日志刷屏：每 5 秒输出一次 INFO 级别汇总
+                    now_log = time.time()
+                    if not hasattr(self, "_last_frame_info_log_at") or now_log - self._last_frame_info_log_at >= 10.0:
+                        self._last_frame_info_log_at = now_log
+                        logger.info(
+                            f"[拉流] 读取到图片 | rtsp={self.rtsp_url}, {device_info}, "
+                            f"stream_id={self._stream_id}, frame_ts={frame_ts}, "
+                            f"frame_shape={frame.shape if frame is not None else None}, "
+                            f"tasks={task_info}"
+                        )
+                except Exception:
+                    logger.debug("读取到图片日志打印失败", exc_info=True)
+
                 frame_captured_time = time.time()
                 # C++ 端 ts 是 steady_clock 的毫秒时间戳（从系统启动开始计数）
                 # Python 的 time.monotonic() 也是 CLOCK_MONOTONIC（系统启动为 epoch），可以对应

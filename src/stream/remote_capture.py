@@ -171,31 +171,54 @@ class _NotifySemaphore:
 class _ShmReader:
     """共享内存帧读取器（内部使用）"""
 
-    def __init__(self, stream_id: str):
+    def __init__(self, stream_id: str, layout_info: Optional[dict] = None):
         self.stream_id = stream_id
         self.shm_paths = [f"/dev/shm/{stream_id}", f"/{stream_id.lstrip('/')}"]
 
-        self.ALIGNMENT = 64
         self.UINT64_SIZE = 8
         self.UINT32_SIZE = 4
-        self.MAX_FRAME_BYTES = 3 * 2560 * 1440
-        self.SLOT_COUNT = 3
 
-        self.META_DATA_SIZE = 4 * self.UINT64_SIZE + 4 * self.UINT32_SIZE
-        self.META_STRUCT_SIZE = align_up(self.META_DATA_SIZE, self.ALIGNMENT)
+        if layout_info:
+            # 使用服务端 GetShmLayout 返回的实际布局，避免硬编码出错
+            self.ALIGNMENT = layout_info["alignment"]
+            self.MAX_FRAME_BYTES = layout_info["max_frame_bytes"]
+            self.SLOT_COUNT = layout_info["slot_count"]
+            self.META_DATA_SIZE = layout_info["meta_data_size"]
+            self.SEQ_OFFSET = layout_info["seq_offset"]
+            self.META_OFFSET = layout_info["meta_offset"]
+            self.PAYLOAD_OFFSET = layout_info["payload_offset"]
+            self.SLOT_SIZE = layout_info["slot_size"]
+            # meta 在内存中实际占用的对齐后大小
+            self.META_STRUCT_SIZE = self.PAYLOAD_OFFSET - self.META_OFFSET
+            
+            # 【优化】直接使用 C++ 端计算好的偏移和总大小
+            self.HEAD_IDX_OFFSET = layout_info.get("head_idx_offset")
+            self.TOTAL_SIZE = layout_info.get("total_size")
+        else:
+            # 旧版服务端未实现 GetShmLayout 时的 fallback 硬编码
+            self.ALIGNMENT = 64
+            self.MAX_FRAME_BYTES = 3 * 2560 * 1440
+            self.SLOT_COUNT = 3
 
-        self.SEQ_OFFSET = 0
-        self.META_OFFSET = align_up(self.SEQ_OFFSET + self.UINT64_SIZE, self.ALIGNMENT)
-        self.PAYLOAD_OFFSET = self.META_OFFSET + self.META_STRUCT_SIZE
+            self.META_DATA_SIZE = 4 * self.UINT64_SIZE + 4 * self.UINT32_SIZE
+            self.META_STRUCT_SIZE = align_up(self.META_DATA_SIZE, self.ALIGNMENT)
 
-        slot_raw_size = self.PAYLOAD_OFFSET + self.MAX_FRAME_BYTES
-        self.SLOT_SIZE = align_up(slot_raw_size, self.ALIGNMENT)
+            self.SEQ_OFFSET = 0
+            self.META_OFFSET = align_up(self.SEQ_OFFSET + self.UINT64_SIZE, self.ALIGNMENT)
+            self.PAYLOAD_OFFSET = self.META_OFFSET + self.META_STRUCT_SIZE
+
+            slot_raw_size = self.PAYLOAD_OFFSET + self.MAX_FRAME_BYTES
+            self.SLOT_SIZE = align_up(slot_raw_size, self.ALIGNMENT)
+            
+            # 【优化】Fallback 下自行计算
+            self.HEAD_IDX_OFFSET = align_up(self.SLOT_COUNT * self.SLOT_SIZE, self.ALIGNMENT)
+            self.TOTAL_SIZE = self.SLOT_COUNT * self.SLOT_SIZE + align_up(self.UINT64_SIZE, self.ALIGNMENT)
 
         self._mmap_obj: Optional[mmap.mmap] = None
         self._shm_view: Optional[memoryview] = None
         self._last_idx = -1
         self._connected = False
-        self._notify_sem: Optional[_NotifySemaphore] = None
+        self._notify_sem: Optional[object] = None  # 替换为你实际的信号量类
         self._blocking_mode_logged = False
 
     def __del__(self):
@@ -215,14 +238,16 @@ class _ShmReader:
             if os.path.exists(path):
                 try:
                     fd = os.open(path, os.O_RDONLY)
-                    total_size = self.SLOT_COUNT * self.SLOT_SIZE + align_up(self.UINT64_SIZE, self.ALIGNMENT)
+                    # 【优化】直接使用 self.TOTAL_SIZE
+                    total_size = self.TOTAL_SIZE
                     self._mmap_obj = mmap.mmap(fd, total_size, prot=mmap.PROT_READ)
                     self._shm_view = memoryview(self._mmap_obj)
                     os.close(fd)
                     try:
-                        self._notify_sem = _NotifySemaphore(f"/{self.stream_id}_notify")
+                        # 假设 _NotifySemaphore 在你的上下文里已定义
+                        self._notify_sem = _NotifySemaphore(f"/{self.stream_id}_notify") # type: ignore
                         logger.info(f"✓ SHM notify semaphore connected: /{self.stream_id}_notify")
-                    except OSError as e:
+                    except Exception as e:
                         logger.warning(f"SHM notify semaphore not available (will use polling fallback): {e}")
                         self._notify_sem = None
                     self._connected = True
@@ -239,12 +264,19 @@ class _ShmReader:
         return struct.unpack("Q", self._shm_view[offset:end])[0]
 
     def _read_meta(self, slot_offset: int) -> Optional[dict]:
+        """修改此处的切片大小以配合 struct.unpack"""
         start = slot_offset + self.META_OFFSET
-        end = start + self.META_DATA_SIZE
+        
+        # 【关键修改】：不管 C++ 填充（Padding）了多少，
+        # 我们只读取 struct 解包需要的、没有填充的 48 字节数据
+        unpack_format = "QQQQIIII"
+        unpack_size = struct.calcsize(unpack_format)  # 48 字节
+        
+        end = start + unpack_size
         if end > len(self._shm_view):
             return None
         raw = self._shm_view[start:end]
-        f = struct.unpack("QQQQIIII", raw)
+        f = struct.unpack(unpack_format, raw)
         return {
             'size': f[0], 'w': f[1], 'h': f[2], 'ts': f[3],
             'ch': f[4], 'depth': f[5], 'step': f[6], '_rsv': f[7]
@@ -283,7 +315,8 @@ class _ShmReader:
         if not self._shm_view:
             return False
         try:
-            head_off = align_up(self.SLOT_COUNT * self.SLOT_SIZE, self.ALIGNMENT)
+            # 【优化】直接使用 self.HEAD_IDX_OFFSET
+            head_off = self.HEAD_IDX_OFFSET
             latest = self._read_u64(head_off)
             if latest is None or latest == self._last_idx:
                 return False
@@ -304,7 +337,8 @@ class _ShmReader:
         if not self._shm_view:
             return None, 0
         try:
-            head_off = align_up(self.SLOT_COUNT * self.SLOT_SIZE, self.ALIGNMENT)
+            # 【优化】直接使用 self.HEAD_IDX_OFFSET
+            head_off = self.HEAD_IDX_OFFSET
             latest = self._read_u64(head_off)
             if latest is None or latest == self._last_idx:
                 return None, 0
@@ -343,7 +377,8 @@ class _ShmReader:
             ok, img, ts = self._try_read()
             if ok:
                 return ok, img, ts
-            if not self._notify_sem.wait(timeout_ms):
+            # 假定 _notify_sem.wait 是你的信号量等待机制
+            if not self._notify_sem.wait(timeout_ms): # type: ignore
                 return False, None, 0
             return self._try_read()
         else:
@@ -384,7 +419,7 @@ class _ShmReader:
             self._mmap_obj = None
         if self._notify_sem:
             try:
-                self._notify_sem.close()
+                self._notify_sem.close() # type: ignore
             except Exception:
                 pass
             self._notify_sem = None
@@ -525,6 +560,38 @@ class _BaseRTSPClient:
         if self._stub is not None:
             return True
         return self.connect()
+
+    @_grpc_retry(default_return=None)
+    def get_shm_layout(self) -> Optional[dict]:
+        """从服务端获取共享内存布局信息；旧版服务端未实现则返回 None"""
+        if not self._ensure_stub():
+            return None
+        req = stream_service_pb2.ShmLayoutRequest()
+        try:
+            resp = self._stub.GetShmLayout(req, timeout=5)
+            if resp.success:
+                layout = resp.layout
+                return {
+                    "slot_count": layout.slot_count,
+                    "max_frame_bytes": layout.max_frame_bytes,
+                    "alignment": layout.alignment,
+                    "slot_size": layout.slot_size,
+                    "seq_offset": layout.seq_offset,
+                    "meta_offset": layout.meta_offset,
+                    "payload_offset": layout.payload_offset,
+                    "meta_data_size": layout.meta_data_size,
+                    "head_idx_offset": layout.head_idx_offset,
+                    "total_size": layout.total_size,
+                }
+            logger.warning(f"服务端返回 GetShmLayout 失败: {resp.message}")
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                logger.debug("服务端未实现 GetShmLayout，SHM 使用本地硬编码布局")
+            else:
+                logger.error(f"获取 SHM 布局失败: {e.details()}")
+        except Exception as e:
+            logger.error(f"获取 SHM 布局失败: {e}")
+        return None
 
     def start_stream(self,
                      rtsp_url: str,
@@ -737,9 +804,10 @@ class RTSPClient(_BaseRTSPClient):
     def __init__(self, server_address: str = '127.0.0.1:50051'):
         super().__init__(server_address)
         self._shm_readers: Dict[str, _ShmReader] = {}
-        self._stream_modes: Dict[str, bool] = {}     # stream_id -> use_shared_mem 缓存
-        self._stream_params: Dict[str, dict] = {}     # original_stream_id -> 启动参数
-        self._stream_id_map: Dict[str, str] = {}      # original_stream_id -> current_stream_id
+        self._stream_modes: Dict[str, bool] = {}      # stream_id -> use_shared_mem 缓存
+        self._stream_params: Dict[str, dict] = {}      # original_stream_id -> 启动参数
+        self._stream_id_map: Dict[str, str] = {}       # original_stream_id -> current_stream_id
+        self._shm_layout: Optional[dict] = None        # 服务端 SHM 布局缓存
         # 注册进程退出兜底清理：避免客户端异常退出后 mmap 长期占用 tmpfs 空间
         atexit.register(_cleanup_client_on_exit, weakref.ref(self))
 
@@ -962,7 +1030,10 @@ class RTSPClient(_BaseRTSPClient):
                 return None
             return reader
 
-        reader = _ShmReader(stream_id)
+        if self._shm_layout is None:
+            self._shm_layout = self.get_shm_layout()
+
+        reader = _ShmReader(stream_id, layout_info=self._shm_layout)
         if not reader.exists():
             logger.error(
                 f"[RTSPClient] 未找到共享内存: /dev/shm/{stream_id}。"

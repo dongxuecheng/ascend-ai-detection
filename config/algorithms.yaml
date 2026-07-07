@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['8', '34','14']
+supported_codes: ['8', '34', '14', '0']
 code_descriptions:
 - code: '0'
   descriptions: 未戴安全帽
@@ -119,6 +119,7 @@ sam3_urls:
 - {code: '8', url: 'http://192.168.100.75:18002/predict'}
 - {code: '14', url: 'http://192.168.100.75:18002/predict-person-about-small-object'}
 - {code: '34', url: 'http://192.168.100.75:18002/predict'}
+- {code: '0', url: 'http://192.168.100.75:18002/predict-person-about-small-object'}
 
 fence_algorithms:
 - {code: '8'}
@@ -147,6 +148,8 @@ yolo_pre_detect:
 - {code: '8', yolo11_plan: [person]}
 - {code: '34', yolo11_plan: [person]}
 - {code: '14', yolo11_plan: [person]}
+- {code: '0', yolo11_plan: [person]}
+
 
 algorithm_detectors:
 - {code: '0', detectors: [HelmetDetector]}
@@ -181,4 +184,5 @@ algorithm_classifiers:
 alert_dedup:
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
-- {code: '34', enabled: true, cooldown_seconds: 300}
+- {code: '34', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}

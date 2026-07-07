@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-import stream_service_pb2 as stream__service__pb2
+from src.stream import stream_service_pb2 as src_dot_stream_dot_stream__service__pb2
 
-GRPC_GENERATED_VERSION = '1.67.1'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,14 +18,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in stream_service_pb2_grpc.py depends on'
+        + ' but the generated code in src/stream/stream_service_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class RTSPStreamServiceStub(object):
+class RTSPStreamServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -36,42 +36,47 @@ class RTSPStreamServiceStub(object):
         """
         self.StartStream = channel.unary_unary(
                 '/streamingservice.RTSPStreamService/StartStream',
-                request_serializer=stream__service__pb2.StartRequest.SerializeToString,
-                response_deserializer=stream__service__pb2.StartResponse.FromString,
+                request_serializer=src_dot_stream_dot_stream__service__pb2.StartRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.StartResponse.FromString,
                 _registered_method=True)
         self.StopStream = channel.unary_unary(
                 '/streamingservice.RTSPStreamService/StopStream',
-                request_serializer=stream__service__pb2.StopRequest.SerializeToString,
-                response_deserializer=stream__service__pb2.StopResponse.FromString,
+                request_serializer=src_dot_stream_dot_stream__service__pb2.StopRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.StopResponse.FromString,
                 _registered_method=True)
         self.GetLatestFrame = channel.unary_unary(
                 '/streamingservice.RTSPStreamService/GetLatestFrame',
-                request_serializer=stream__service__pb2.FrameRequest.SerializeToString,
-                response_deserializer=stream__service__pb2.FrameResponse.FromString,
+                request_serializer=src_dot_stream_dot_stream__service__pb2.FrameRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.FrameResponse.FromString,
                 _registered_method=True)
         self.StreamFrames = channel.unary_stream(
                 '/streamingservice.RTSPStreamService/StreamFrames',
-                request_serializer=stream__service__pb2.StreamRequest.SerializeToString,
-                response_deserializer=stream__service__pb2.FrameResponse.FromString,
+                request_serializer=src_dot_stream_dot_stream__service__pb2.StreamRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.FrameResponse.FromString,
                 _registered_method=True)
         self.CheckStream = channel.unary_unary(
                 '/streamingservice.RTSPStreamService/CheckStream',
-                request_serializer=stream__service__pb2.CheckRequest.SerializeToString,
-                response_deserializer=stream__service__pb2.CheckResponse.FromString,
+                request_serializer=src_dot_stream_dot_stream__service__pb2.CheckRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.CheckResponse.FromString,
                 _registered_method=True)
         self.ListStreams = channel.unary_unary(
                 '/streamingservice.RTSPStreamService/ListStreams',
-                request_serializer=stream__service__pb2.ListStreamsRequest.SerializeToString,
-                response_deserializer=stream__service__pb2.ListStreamsResponse.FromString,
+                request_serializer=src_dot_stream_dot_stream__service__pb2.ListStreamsRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.ListStreamsResponse.FromString,
                 _registered_method=True)
         self.UpdateStream = channel.unary_unary(
                 '/streamingservice.RTSPStreamService/UpdateStream',
-                request_serializer=stream__service__pb2.UpdateStreamRequest.SerializeToString,
-                response_deserializer=stream__service__pb2.UpdateStreamResponse.FromString,
+                request_serializer=src_dot_stream_dot_stream__service__pb2.UpdateStreamRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.UpdateStreamResponse.FromString,
+                _registered_method=True)
+        self.GetShmLayout = channel.unary_unary(
+                '/streamingservice.RTSPStreamService/GetShmLayout',
+                request_serializer=src_dot_stream_dot_stream__service__pb2.ShmLayoutRequest.SerializeToString,
+                response_deserializer=src_dot_stream_dot_stream__service__pb2.ShmLayoutResponse.FromString,
                 _registered_method=True)
 
 
-class RTSPStreamServiceServicer(object):
+class RTSPStreamServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def StartStream(self, request, context):
@@ -119,43 +124,55 @@ class RTSPStreamServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetShmLayout(self, request, context):
+        """获取共享内存布局信息
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RTSPStreamServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'StartStream': grpc.unary_unary_rpc_method_handler(
                     servicer.StartStream,
-                    request_deserializer=stream__service__pb2.StartRequest.FromString,
-                    response_serializer=stream__service__pb2.StartResponse.SerializeToString,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.StartRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.StartResponse.SerializeToString,
             ),
             'StopStream': grpc.unary_unary_rpc_method_handler(
                     servicer.StopStream,
-                    request_deserializer=stream__service__pb2.StopRequest.FromString,
-                    response_serializer=stream__service__pb2.StopResponse.SerializeToString,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.StopRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.StopResponse.SerializeToString,
             ),
             'GetLatestFrame': grpc.unary_unary_rpc_method_handler(
                     servicer.GetLatestFrame,
-                    request_deserializer=stream__service__pb2.FrameRequest.FromString,
-                    response_serializer=stream__service__pb2.FrameResponse.SerializeToString,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.FrameRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.FrameResponse.SerializeToString,
             ),
             'StreamFrames': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamFrames,
-                    request_deserializer=stream__service__pb2.StreamRequest.FromString,
-                    response_serializer=stream__service__pb2.FrameResponse.SerializeToString,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.StreamRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.FrameResponse.SerializeToString,
             ),
             'CheckStream': grpc.unary_unary_rpc_method_handler(
                     servicer.CheckStream,
-                    request_deserializer=stream__service__pb2.CheckRequest.FromString,
-                    response_serializer=stream__service__pb2.CheckResponse.SerializeToString,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.CheckRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.CheckResponse.SerializeToString,
             ),
             'ListStreams': grpc.unary_unary_rpc_method_handler(
                     servicer.ListStreams,
-                    request_deserializer=stream__service__pb2.ListStreamsRequest.FromString,
-                    response_serializer=stream__service__pb2.ListStreamsResponse.SerializeToString,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.ListStreamsRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.ListStreamsResponse.SerializeToString,
             ),
             'UpdateStream': grpc.unary_unary_rpc_method_handler(
                     servicer.UpdateStream,
-                    request_deserializer=stream__service__pb2.UpdateStreamRequest.FromString,
-                    response_serializer=stream__service__pb2.UpdateStreamResponse.SerializeToString,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.UpdateStreamRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.UpdateStreamResponse.SerializeToString,
+            ),
+            'GetShmLayout': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetShmLayout,
+                    request_deserializer=src_dot_stream_dot_stream__service__pb2.ShmLayoutRequest.FromString,
+                    response_serializer=src_dot_stream_dot_stream__service__pb2.ShmLayoutResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -165,7 +182,7 @@ def add_RTSPStreamServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class RTSPStreamService(object):
+class RTSPStreamService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -183,8 +200,8 @@ class RTSPStreamService(object):
             request,
             target,
             '/streamingservice.RTSPStreamService/StartStream',
-            stream__service__pb2.StartRequest.SerializeToString,
-            stream__service__pb2.StartResponse.FromString,
+            src_dot_stream_dot_stream__service__pb2.StartRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.StartResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -210,8 +227,8 @@ class RTSPStreamService(object):
             request,
             target,
             '/streamingservice.RTSPStreamService/StopStream',
-            stream__service__pb2.StopRequest.SerializeToString,
-            stream__service__pb2.StopResponse.FromString,
+            src_dot_stream_dot_stream__service__pb2.StopRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.StopResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -237,8 +254,8 @@ class RTSPStreamService(object):
             request,
             target,
             '/streamingservice.RTSPStreamService/GetLatestFrame',
-            stream__service__pb2.FrameRequest.SerializeToString,
-            stream__service__pb2.FrameResponse.FromString,
+            src_dot_stream_dot_stream__service__pb2.FrameRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.FrameResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -264,8 +281,8 @@ class RTSPStreamService(object):
             request,
             target,
             '/streamingservice.RTSPStreamService/StreamFrames',
-            stream__service__pb2.StreamRequest.SerializeToString,
-            stream__service__pb2.FrameResponse.FromString,
+            src_dot_stream_dot_stream__service__pb2.StreamRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.FrameResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -291,8 +308,8 @@ class RTSPStreamService(object):
             request,
             target,
             '/streamingservice.RTSPStreamService/CheckStream',
-            stream__service__pb2.CheckRequest.SerializeToString,
-            stream__service__pb2.CheckResponse.FromString,
+            src_dot_stream_dot_stream__service__pb2.CheckRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.CheckResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -318,8 +335,8 @@ class RTSPStreamService(object):
             request,
             target,
             '/streamingservice.RTSPStreamService/ListStreams',
-            stream__service__pb2.ListStreamsRequest.SerializeToString,
-            stream__service__pb2.ListStreamsResponse.FromString,
+            src_dot_stream_dot_stream__service__pb2.ListStreamsRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.ListStreamsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -345,8 +362,35 @@ class RTSPStreamService(object):
             request,
             target,
             '/streamingservice.RTSPStreamService/UpdateStream',
-            stream__service__pb2.UpdateStreamRequest.SerializeToString,
-            stream__service__pb2.UpdateStreamResponse.FromString,
+            src_dot_stream_dot_stream__service__pb2.UpdateStreamRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.UpdateStreamResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetShmLayout(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/streamingservice.RTSPStreamService/GetShmLayout',
+            src_dot_stream_dot_stream__service__pb2.ShmLayoutRequest.SerializeToString,
+            src_dot_stream_dot_stream__service__pb2.ShmLayoutResponse.FromString,
             options,
             channel_credentials,
             insecure,
