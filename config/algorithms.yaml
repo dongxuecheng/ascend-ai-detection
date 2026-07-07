@@ -115,18 +115,13 @@ sam3_prompts:
   prompts: [head, helmet, hard hat, person, hand, glove, industrial glove, skin, arm,
     person leg]
   return_mask: true
-sam3_urls:
-- {code: '8', url: 'http://192.168.100.75:18002/predict'}
-- {code: '14', url: 'http://192.168.100.75:18002/predict-person-about-small-object'}
-- {code: '34', url: 'http://192.168.100.75:18002/predict'}
-- {code: '0', url: 'http://192.168.100.75:18002/predict-person-about-small-object'}
-- {code: '52', url: 'http://192.168.100.75:18002/predict'}
-- {code: '53', url: 'http://192.168.100.75:18002/predict'}
-- {code: '38', url: 'http://192.168.100.75:18002/predict'}
-- {code: '56', url: 'http://192.168.100.75:18002/predict'}
-- {code: '58', url: 'http://192.168.100.75:18002/predict'}
-- {code: '49', url: 'http://192.168.100.75:18002/predict'}
-- {code: '59', url: 'http://192.168.100.75:18002/predict'}
+# SAM3 接口地址分组配置。
+# 同一 URL 的算法码放在同一个 group 中；未在 groups 中配置的算法码将回退到 config.SAM3_URL_OBJ。
+sam3_url_groups:
+  - url: 'http://192.168.100.75:18002/predict'
+    codes: ['8', '34', '52', '53', '38', '56', '58', '49', '59']
+  - url: 'http://192.168.100.75:18002/predict-person-about-small-object'
+    codes: ['0', '14']
 
 fence_algorithms:
 - {code: '8'}
@@ -135,24 +130,7 @@ fence_algorithms:
 use_yolo_boxes:
 - {code: '200'}
 
-yolo_model_configs:
-- name: yolo11_plan
-  input_name: images
-  output_name: output0
-  input_size: 640
-  output_format: yolo_v8_v11
-  conf_thresh: 0.5
-  iou_thresh: 0.45
-  label_map_file: config/coco.names
-- name: yolo12s_face
-  input_name: images
-  output_name: output0
-  input_size: 1280
-  output_format: yolo_v8_v11
-  conf_thresh: 0.3
-  iou_thresh: 0.45
-  label_map_file: config/yolo12s_face.names
-# ['8', '34', '14', '0', '52', '53']
+# YOLO 预检测配置：模型详细参数已迁移到 config/models.yaml
 yolo_pre_detect:
 - {code: '8', yolo11_plan: [person]}
 - {code: '34', yolo11_plan: [person]}
@@ -209,22 +187,7 @@ algorithm_intervals:
 - {code: '204', interval: 5.0}
 - {code: '205', interval: 5.0}
 
-# 分类模型配置（用于对规则引擎检出的违规目标进行二次确认）
-classification_configs:
-- name: resnet_smoke
-  model_name: resnet_smoke
-  input_name: input
-  output_name: output
-  input_size: 224
-  labels: [smoking, normal]
-  conf_thresh: 0.5
-  target_class: smoking
-  expand_ratio: 2.0
-  # 与 PyTorch 预处理对齐：ToTensor + Normalize
-  mean: [0.485, 0.456, 0.406]
-  std: [0.229, 0.224, 0.225]
-
-# 算法码 -> 需要调用的分类器名称列表
+# 算法码 -> 需要调用的分类器名称列表（分类模型定义见 config/models.yaml）
 algorithm_classifiers:
 - {code: '14', classifiers: [resnet_smoke]}
 

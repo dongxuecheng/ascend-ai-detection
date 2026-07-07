@@ -31,12 +31,16 @@
 
 ### 外部依赖服务
 
-| 服务 | 地址 | 作用 |
-|------|------|------|
-| SAM3 推理服务 | `http://172.16.20.193:28005/predict` | 图像分割/检测 |
-| SAM3 目标检测 | `http://172.16.20.193:28005/predict-object` | 目标级推理 |
-| 任务/告警平台 | `http://36.7.84.146:28801/open/api/operate/*` | 任务列表、围栏、流地址、上报 |
-| RTSP 流媒体后端 | `127.0.0.1:50052` (gRPC) | C++ 实现的 RTSP 解码与推流服务 |
+| 服务 | 配置字段 | 默认地址（hdzp 环境） | 作用 |
+|------|----------|----------------------|------|
+| SAM3 推理服务 | `SAM3_URL` / `SAM3_URL_OBJ` | `http://192.168.100.75:18002/predict` | 图像分割/检测 |
+| SAM3 目标检测 | `SAM3_URL_OBJ` | `http://192.168.100.75:18002/predict-person-about-small-object` | 目标级推理 |
+| 任务/告警平台 | `GET_TASK_URL` / `GET_FENCE_URL` / `GET_RTSP_URL` / `UPLOAD_URL` | `http://192.168.100.73/open/api/operate/*` | 任务列表、围栏、流地址、上报 |
+| RTSP 流媒体后端 | `STREAM_SERVER_ADDRESS` | `192.168.100.74:50051` (gRPC) | C++ 实现的 RTSP 解码与推流服务 |
+| Triton YOLO 推理 | `TRITON_YOLO_URL` | `192.168.100.74:38000` | YOLO 模型推理服务 |
+| VL 大模型复核 | `VL_API_URL` / `VL_MODEL` | `http://192.168.100.75:18000/v1` | 视觉大模型二次确认 |
+
+> 所有外部服务接口地址统一收口到 `src/config/config.py`，业务代码在调用时从 `config` 读取并显式传入服务类，服务类本身不再硬编码环境地址。
 
 > **注意**：项目中没有 `requirements.txt`、`pyproject.toml` 或 `setup.py`，依赖需要手动安装。
 
@@ -48,7 +52,8 @@
 AIDetection/
 ├── main.py                     # 入口启动器（将 src/ 加入 sys.path 后运行）
 ├── config/                     # 业务配置文件
-│   ├── algorithms.yaml         # 算法码、SAM3 prompt、YOLO 模型配置
+│   ├── algorithms.yaml         # 算法码、SAM3 prompt、检测器映射等业务规则配置
+│   ├── models.yaml             # YOLO / 分类模型推理参数配置
 │   ├── coco.names              # YOLO COCO 80 类别名文件
 │   └── yolo12s_face.names      # 自定义模型类别名文件（示例）
 ├── src/                        # 核心源代码
@@ -104,14 +109,26 @@ AIDetection/
 
 ### 1. 配置层 (`config/`)
 
-`src/config/config.py` 使用 Pydantic `BaseModel` 定义配置，支持通过环境变量 `AIDETECTION_ENV` 或 `.env` 文件切换环境。算法相关配置统一放在 `config/algorithms.yaml` 中，使用 YAML 格式以便阅读和注释。
+`src/config/config.py` 使用 Pydantic `BaseModel` 定义配置。所有外部服务接口地址（`SAM3_URL`、`UPLOAD_URL`、`TRITON_YOLO_URL` 等）和 `REQUEST_INTERVAL` 都支持通过同名环境变量覆盖默认值；算法相关配置分为两个 YAML 文件：
+
+> **环境变量覆盖**：
+> `docker-compose.yml` 通过 `env_file: .env` 将所有配置注入容器，容器启动时会优先使用 `.env` 中设置的值。只需修改 `.env` 即可切换部署环境，无需再维护 `company` / `mhwj` / `hdzp` 等环境子类。
+
+- `config/algorithms.yaml`：算法码、描述、SAM3 prompt/URL、检测器映射、检测间隔、去重等业务规则。
+- `config/models.yaml`：YOLO 模型、分类模型等模型推理参数，便于独立维护。
+
+`src/config/config.py` 启动时会自动合并两个文件，业务代码仍通过统一的 `config` 对象访问。
 
 当前注册的环境：
-- `company`（默认）
+- `hdzp`（华电漳平环境，默认）
+- `company`（公司内部环境）
 - `mhwj`（梅花味精环境）
 
+> 默认环境由 `src/config/config.py` 中的 `_DEFAULT_ENV` 指定，当前为 `hdzp`。
+
 关键配置项：
-- `SAM3_URL` / `SAM3_URL_OBJ`：外部 AI 推理地址
+- `SAM3_URL` / `SAM3_URL_OBJ`：外部 AI 推理默认地址
+- `config/algorithms.yaml` 中的 `sam3_url_groups`：按 URL 分组配置算法码，未分组的算法码回退到 `SAM3_URL_OBJ`。
 - `GET_TASK_URL`：获取检测任务列表
 - `GET_FENCE_URL`：获取电子围栏
 - `GET_RTSP_URL`：获取预览流地址
@@ -157,11 +174,16 @@ AIDetection/
 | 共享内存 (SHM) | `start_stream(..., use_shared_mem=True)` + `read()` | **生产环境** | gRPC 仅做流生命周期管理，帧数据通过 POSIX 共享内存零拷贝传输 |
 
 **SHM 帧布局**（由 C++ 后端定义）：
-- 内存路径：`/dev/shm/{stream_id}`
+- 内存路径：`/dev/shm/{stream_id}`（容器化部署时通过 `SHM_NAMESPACE` 映射到 `/dev/shm/<namespace>/{stream_id}`）
 - 8 槽位环形缓冲区，64 字节对齐
 - 每帧头部包含：size、width、height、timestamp、channels、depth、step
 - 像素数据直接映射为 `numpy` 数组
 - 支持 POSIX 命名信号量（`/{stream_id}_notify`）阻塞等待，降级为自适应轮询
+
+**多项目 SHM 隔离**：
+- `docker-compose.yml` 通过 `SHM_NAMESPACE` 环境变量将 `/dev/shm` 绑定到宿主机 `/dev/shm/<SHM_NAMESPACE>/`。
+- 同一服务器运行多个项目时，设置不同 `SHM_NAMESPACE` 即可隔离各自的 SHM 文件，避免 `stream_id` 冲突。
+- 同一项目内若需对同一路流使用不同参数拉两次，应使用不同的 `stream_id`（如加入分辨率/参数后缀）。
 
 `RTSPClient` 提供统一的 API：`connect()` / `disconnect()`、`start_stream()` / `stop_stream()`、`read()`、`update_stream_url()`、`check_stream()`。`core/stream_worker.py` 默认使用 SHM 模式拉流。
 
@@ -356,7 +378,7 @@ python -m grpc_tools.protoc \
 3. **类/函数命名**：
    - 类名使用大驼峰（如 `TaskManager`、`RTSPClient`、`Box`）
    - 函数/方法名使用小写下划线（如 `get_tasks_by_device`、`point_in_fence`）
-4. **配置扩展**：新增环境时，在 `src/config/config.py` 的 `CONFIG_MAP` 中注册新的 `BaseConfig` 子类即可，无需修改其他逻辑。
+4. **配置扩展**：不同环境的差异化配置通过同名环境变量覆盖 `BaseConfig` 默认值，无需再注册环境子类。
 5. **数据类**：任务相关对象使用普通类手动定义 `__init__` 和 `__str__`，未使用 `@dataclass`。
 6. **线程安全**：`TaskManager` 使用 `threading.Lock()` 保护任务字典的读写。
 
@@ -379,5 +401,5 @@ python -m grpc_tools.protoc \
 
 1. **硬编码 IP 地址**：多处存在内网 IP 硬编码（`172.16.20.193`、`36.7.84.146`、`127.0.0.1`），生产部署时需确认网络可达性和防火墙规则。
 2. **无身份验证**：`TaskManager` 向远程 API 发送的 HTTP 请求以及 SAM3 推理请求均未见认证机制。
-3. **共享内存路径**：`/dev/shm/{stream_id}` 的命名需确保 `stream_id` 不会被恶意构造以访问其他共享内存段。
+3. **共享内存路径**：`/dev/shm/{stream_id}` 的命名需确保 `stream_id` 不会被恶意构造以访问其他共享内存段。生产环境建议通过 `SHM_NAMESPACE` 做项目级隔离。
 4. **日志脱敏**：当前日志/打印中可能包含设备凭据（`videoName`、`videoPassword`），正式环境需做脱敏处理。

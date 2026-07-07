@@ -74,20 +74,19 @@ pip install pydantic python-dotenv pyyaml requests opencv-python numpy shapely g
 
 ### 2. 环境变量配置（可选）
 
-在项目根目录创建 `.env` 文件，或直接在 shell 中导出：
+项目根目录已提供 `.env.example` 模板。首次部署时复制为 `.env` 并根据实际环境修改：
 
 ```bash
-# 切换环境（company / mhwj）
-export AIDETECTION_ENV=company
+cp .env.example .env
+# 编辑 .env 修改外部服务地址等配置
+vim .env
+```
 
-# 日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL
-export AIDETECTION_LOG_LEVEL=INFO
+`src/config/config.py` 会使用 `.env` 中的同名环境变量覆盖默认值。也可以通过 shell 直接导出：
 
-# 日志文件路径（默认 logs/app.log）
-export AIDETECTION_LOG_FILE=/var/log/aidetection.log
-
-# 禁用控制台输出（仅写入文件）
-export AIDETECTION_LOG_DISABLE_CONSOLE=1
+```bash
+export SAM3_URL=http://your-sam3-server:18002/predict
+export TRITON_YOLO_URL=your-triton-server:38000
 ```
 
 ### 3. 运行
@@ -149,26 +148,15 @@ Orchestrator diff 任务列表
 
 ## 配置说明
 
-### 多环境切换
+### 通过环境变量覆盖配置
 
-在 `src/config/config.py` 的 `CONFIG_MAP` 中注册新环境：
+配置统一集中在 `src/config/config.py` 中，默认值可通过同名环境变量覆盖，无需再维护环境子类。
 
-```python
-class NewEnvConfig(BaseConfig):
-    SAM3_URL = "http://..."
-    UPLOAD_URL = "http://..."
-
-CONFIG_MAP = {
-    "company": CompanyConfig,
-    "mhwj": MHWJConfig,
-    "newenv": NewEnvConfig,
-}
-```
-
-通过环境变量切换：
+例如自定义 SAM3 地址：
 
 ```bash
-export AIDETECTION_ENV=newenv
+export SAM3_URL=http://your-sam3-server:18002/predict
+python main.py
 ```
 
 ### 新增算法

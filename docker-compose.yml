@@ -4,11 +4,24 @@
 # 使用方式：
 #   docker compose up -d
 #
+# 如果 RTSP 流媒体后端（grpc_rtsp）在另一个项目中，可通过 include 引入其 Compose 文件，
+# 路径请按实际目录结构调整。
+#
+# 共享内存隔离说明：
+#   - 本项目的 RTSP 拉流后端（grpc_rtsp）与 Python 客户端通过 /dev/shm 交换帧数据。
+#   - 若同一台宿主机上运行多个项目，需避免 SHM 命名冲突。本文件通过 SHM_NAMESPACE
+#     将 SHM 文件隔离到 /dev/shm/<SHM_NAMESPACE>/ 下。
+#   - 首次部署前请在宿主机创建目录：mkdir -p /dev/shm/${SHM_NAMESPACE:-aidetection}
+#
 # 说明：
 #   - 代码通过挂载当前目录到 /app 运行，方便修改后无需重新构建镜像
-#   - 共享内存 /dev/shm 同时被 RTSP 拉流后端和 Triton 客户端使用，需要根据并发路数与分辨率调大
-#   - 默认使用主机网络模式，便于访问宿主机上的 Triton Server（localhost:38000）
-#     如不需要，可改为默认 bridge 网络并修改 TRITON_YOLO_URL 为容器可访问地址
+#   - 使用 Docker 默认 bridge 网络，内部服务（grpc_rtsp、triton）通过服务名访问
+
+# 引入外部依赖服务的 Compose 文件路径，从 .env 读取。
+# 若不需要引入某个服务，可在 .env 中将其路径指向一个空 compose 文件，或注释掉对应行。
+include:
+  - ${GRPC_RTSP_COMPOSE:-../grpc_rtsp/docker-compose.yml}
+  - ${TRITON_COMPOSE:-../triton/docker-compose.yml}
 
 services:
   aidetection:
@@ -17,41 +30,24 @@ services:
       dockerfile: Dockerfile
     image: aidetection:latest
     container_name: aidetection
-    # 使用宿主机网络，可直接访问 localhost 上的 Triton / RTSP 流媒体后端
-    # 如需隔离网络，请注释下行并调整配置中的服务地址
-    network_mode: host
-    # 容器内 /dev/shm 大小；当下面使用 bind mount /dev/shm:/dev/shm 时，实际大小由宿主机 /dev/shm 决定
+    # 使用 Docker 默认 bridge 网络，与 include 引入的 grpc_rtsp / triton 服务通过服务名通信。
+    # 如需访问宿主机上的外部服务（SAM3、任务平台等），请确保 Docker 网络可路由到对应 IP，
+    # 或在 .env 中使用 host.docker.internal / 具体宿主机 IP。
+    # 注意：使用 bind mount /dev/shm/<namespace>:/dev/shm 时，容器内实际容量由宿主机 /dev/shm 决定，
+    # shm_size 字段不再生效。请直接在宿主机调整：mount -o remount,size=32G /dev/shm
     # RTSP 共享内存估算：每路流 ≈ 宽*高*3*8(slot) + 对齐开销；8 路 1080p 约 400MB，4K 约 1.6GB
-    # 建议生产环境至少 2g~4g，并同时调大宿主机 /dev/shm
-    shm_size: 20g
+    # 建议生产环境至少 32G，并同时调大宿主机 /dev/shm
     restart: unless-stopped
-    # 环境变量会优先从当前目录 .env 文件（Compose 自动加载）或 shell 中读取
-    # 也可以在 environment 下直接修改默认值
-    environment:
-      # 运行环境：company / mhwj / 自定义
-      AIDETECTION_ENV: ${AIDETECTION_ENV:-hdzp}
-      # 日志级别：DEBUG / INFO / WARNING / ERROR
-      AIDETECTION_LOG_LEVEL: ${AIDETECTION_LOG_LEVEL:-INFO}
-      # Triton YOLO 推理服务地址
-      TRITON_YOLO_URL: ${TRITON_YOLO_URL:-localhost:38000}
-      # SAM3 推理服务地址
-      SAM3_URL: ${SAM3_URL:-http://192.168.100.75:18002/predict}
-      SAM3_URL_OBJ: ${SAM3_URL_OBJ:-http://192.168.100.75:18002/predict-person-about-small-object}
-      # 任务/告警平台地址
-      GET_TASK_URL: ${GET_TASK_URL:-http://192.168.100.73/open/api/operate/taskList}
-      GET_FENCE_URL: ${GET_FENCE_URL:-http://192.168.100.73/open/api/operate/fence}
-      GET_RTSP_URL: ${GET_RTSP_URL:-http://192.168.100.73/open/api/operate/previewURLs}
-      UPLOAD_URL: ${UPLOAD_URL:-http://192.168.100.73/open/api/operate/upload}
-      # 任务同步间隔（秒）
-      REQUEST_INTERVAL: ${REQUEST_INTERVAL:-10}
-      # Python 无缓冲输出，便于实时查看日志
-      PYTHONUNBUFFERED: "1"
-      # 容器时区，默认使用上海时间；可通过 shell 环境变量或 .env 覆盖
-      TZ: ${TZ:-Asia/Shanghai}
+    # 所有应用配置统一从项目根目录 .env 文件加载并注入容器
+    # 这样 docker-compose.yml 本身不需要维护具体配置值，修改 .env 即可
+    env_file:
+      - .env
     volumes:
       # 挂载当前目录代码到容器中运行
       - .:/app
-      - /dev/shm:/dev/shm
+      # 项目级 SHM 隔离：同一宿主机多个项目运行时，避免 stream_id 冲突。
+      # 与 grpc_rtsp 服务端挂载同一个宿主机目录，双方通过 /dev/shm/{stream_id} 交互。
+      - /dev/shm/${SHM_NAMESPACE:-aidetection}:/dev/shm
       # 违章原图本地保存目录：按类别和日期落盘
       - /mnt/yolo/images:/mnt/yolo/images
       # 同步宿主机时区，避免容器内时间/日志时间不对
@@ -65,13 +61,8 @@ services:
         max-size: "100m"
         max-file: "5"
 
-# 如果 RTSP 流媒体后端也容器化并放在同一个 compose 文件里，可以使用共享 tmpfs volume：
-# volumes:
-#   rtsp-shm:
-#     driver: local
-#     driver_opts:
-#       type: tmpfs
-#       device: tmpfs
-#       o: "size=4g,uid=0,gid=0"
-# 然后把两个服务的 volumes 都改成：
-#   - rtsp-shm:/dev/shm
+# 如果 RTSP 流媒体后端（grpc_rtsp）也放在同一个 compose 文件里，请确保：
+#   1. 两个 service 挂载同一个宿主机 SHM 目录：
+#        - /dev/shm/${SHM_NAMESPACE:-aidetection}:/dev/shm
+#   2. 服务端创建 SHM 文件时权限设置为 0666，或两个容器使用相同 UID/GID。
+#   3. stream_id 包含项目前缀，避免与其他项目冲突。

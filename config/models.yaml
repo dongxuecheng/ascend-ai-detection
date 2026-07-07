@@ -1,0 +1,33 @@
+_comment: 模型推理配置（YOLO / 分类模型）
+
+yolo_model_configs:
+  - name: yolo11_plan
+    input_name: images
+    output_name: output0
+    input_size: 640
+    output_format: yolo_v8_v11
+    conf_thresh: 0.5
+    iou_thresh: 0.45
+    label_map_file: config/names/coco.names
+  - name: yolo12s_face
+    input_name: images
+    output_name: output0
+    input_size: 1280
+    output_format: yolo_v8_v11
+    conf_thresh: 0.3
+    iou_thresh: 0.45
+    label_map_file: config/names/yolo12s_face.names
+
+classification_configs:
+  - name: resnet_smoke
+    model_name: resnet_smoke
+    input_name: input
+    output_name: output
+    input_size: 224
+    labels: [smoking, normal]
+    conf_thresh: 0.5
+    target_class: smoking
+    expand_ratio: 2.0
+    # 与 PyTorch 预处理对齐：ToTensor + Normalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
