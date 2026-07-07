@@ -9,15 +9,18 @@ from analyze.glove import GloveDetector
 from analyze.zone import ZoneDetector
 from analyze.skin import ExposedArmLegDetector
 from analyze.shield import ShieldDetector
+from analyze.vest import VestDetector
 from analyze.safety import SafetyDetector
 from analyze.single import SingleDetector
 from analyze.smoke import SmokingDetector
+from analyze.belt_deviation import BeltDeviationDetector
 from analyze.car import CarDetector
 from analyze.extinguisher import ExtinguisherDetector
 from analyze.departure import DepartureDetector
 from analyze.play_phone import PlayPhoneDetector
 from analyze.height_work import HeightWorkDetector
 from analyze.coal import CoalDetector
+from analyze.coal_foreign_object import CoalForeignObjectDetector
 from analyze.empty_truck import EmptyTruckDetector
 
 logger = setup_logger("analyzer")
@@ -29,15 +32,18 @@ _DETECTOR_CLASSES = {
     "ZoneDetector": ZoneDetector,
     "ExposedArmLegDetector": ExposedArmLegDetector,
     "ShieldDetector": ShieldDetector,
+    "VestDetector": VestDetector,
     "SafetyDetector": SafetyDetector,
     "SingleDetector": SingleDetector,
     "SmokingDetector": SmokingDetector,
     "CarDetector": CarDetector,
+    "BeltDeviationDetector": BeltDeviationDetector,
     "ExtinguisherDetector": ExtinguisherDetector,
     "DepartureDetector": DepartureDetector,
     "PlayPhoneDetector": PlayPhoneDetector,
     "HeightWorkDetector": HeightWorkDetector,
     "CoalDetector": CoalDetector,
+    "CoalForeignObjectDetector": CoalForeignObjectDetector,
     "EmptyTruckDetector": EmptyTruckDetector,
 }
 

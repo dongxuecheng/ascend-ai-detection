@@ -37,13 +37,16 @@ def detect(
 |------|--------|-----------|----------|--------------|
 | `helmet.py` | `HelmetDetector` | `0` | 未佩戴安全帽 | `head` |
 | `zone.py` | `ZoneDetector` | `8` / `204` | 危险区域闯入 | `person` |
+| `vest.py` | `VestDetector` | `10` | 未穿工服/反光衣 | `person` |
 | `smoke.py` | `SmokingDetector` | `14` | 吸烟检测 | `cigarette` |
+| `belt_deviation.py` | `BeltDeviationDetector` | `33` | 皮带跑偏 | `conveyor belt` |
 | `single.py` | `SingleDetector` | `34` | 单人作业/滞留 | `single_person` |
 | `car.py` | `CarDetector` | `52` | 人员在货车车厢内 | `person` + 相关 `truck bed` |
 | `extinguisher.py` | `ExtinguisherDetector` | `53` | 灭火器缺失 | `fire` / `flame` |
 | `departure.py` | `DepartureDetector` | `38` | 离岗/脱岗 | `departure` |
 | `play_phone.py` | `PlayPhoneDetector` | `56` | 玩手机 | `mobile phone` / `phone` / `cell phone` |
 | `coal.py` | `CoalDetector` | `49` | 堆煤检测 | `coal` / `coal pile` |
+| `coal_foreign_object.py` | `CoalForeignObjectDetector` | `50` | 煤流异物检测 | `conveyor_belt`（候选区域，经 VL 复核） |
 | `empty_truck.py` | `EmptyTruckDetector` | `59` | 空车检查（车厢有煤残留） | `dark coal residue` |
 | `height_work.py` | `HeightWorkDetector` | `58` | 登高无安全带 | `alarm-no-safety-belt` |
 | `glove.py` | `GloveDetector` | `200` / `201` | 未佩戴手套 | `hand` |
@@ -85,7 +88,22 @@ def detect(
 
 ---
 
-### 3. `SmokingDetector` — 吸烟检测（`smoke.py`）
+### 3. `VestDetector` — 未穿工服/反光衣（`vest.py`）
+
+**目标标签**：`person`、`clothes` / `work clothes`、`reflective vest` / `vest` / `uniform`、`red hat` / `red helmet`
+
+**逻辑**：
+1. 过滤 `person`（score ≥ 0.7，面积 ≥ 2500，宽高比 0.25~4.0）。
+2. 过滤普通衣物框 `clothes` / `work clothes` / `clothing`（score ≥ 0.7，面积 ≥ 1500，宽高比 0.25~4.0）。
+3. 过滤反光衣/安全背心框（`reflective vest`、`reflective clothing`、`vest`、`uniform` 等）。
+4. 过滤红色安全帽框（`red hat`、`red helmet`、`red hard hat`）。
+5. 当 person 与普通衣物 `IoM > 0.5`，但与反光衣/安全背心 `IoM ≤ 0.5`，且与红色安全帽 `IoM ≤ 0.5` 时，判定为未穿反光衣/工服违规。
+
+**生成标签**：`person`
+
+---
+
+### 4. `SmokingDetector` — 吸烟检测（`smoke.py`）
 
 **目标标签**：`cigarette`、`person`、`hand`、`head`
 
@@ -99,7 +117,25 @@ def detect(
 
 ---
 
-### 4. `SingleDetector` — 单人作业/滞留（`single.py`）
+### 4. `BeltDeviationDetector` — 皮带跑偏（`belt_deviation.py`）
+
+**目标标签**：`conveyor belt`
+
+**逻辑**：
+1. 将 `fences` 转换为 `shapely.Polygon`；没有有效围栏直接返回。
+2. 过滤 `conveyor belt`（score ≥ 0.5）。
+3. 对每个皮带目标解码 RLE mask，提取外轮廓并转为全局坐标多边形。
+4. 对 U 型/C 型断裂 mask 使用凸包补全，减少遮挡造成的轮廓缺口。
+5. 若皮带多边形与围栏相交，且未完全包含在围栏内，计算越界面积占比。
+6. 当 `outside_ratio > 0.1` 时，判定为皮带跑偏违规。
+
+> 该算法码 `33` 需要 SAM3 返回 mask（`return_mask: true`），以便进行 mask 与围栏的几何关系计算。
+
+**生成标签**：`conveyor belt`
+
+---
+
+### 5. `SingleDetector` — 单人作业/滞留（`single.py`）
 
 **目标标签**：`person`
 
@@ -184,7 +220,22 @@ def detect(
 
 ---
 
-### 10. `EmptyTruckDetector` — 空车检查（`empty_truck.py`）
+### 10. `CoalForeignObjectDetector` — 煤流异物检测（`coal_foreign_object.py`）
+
+**目标标签**：`conveyor belt`
+
+**逻辑**：
+1. 过滤 `conveyor belt`（score ≥ 0.5，面积 ≥ 1000）。
+2. 将检测到的皮带/煤流区域作为候选违规目标返回，label 改为 `conveyor_belt`。
+3. 候选框会进入 VL 大模型二次复核，由大模型判断皮带区域是否存在异物（石块、木头、金属、塑料袋、大块异物等）。
+
+> 该算法码 `50` 启用 VL 大模型复核，prompt 模块见 `llm/prompts/coal_foreign_object.py`。
+
+**生成标签**：`conveyor_belt`
+
+---
+
+### 11. `EmptyTruckDetector` — 空车检查（`empty_truck.py`）
 
 **目标标签**：`truck bed`、`dark coal residue`
 
@@ -198,7 +249,7 @@ def detect(
 
 ---
 
-### 11. `HeightWorkDetector` — 登高无安全带（`height_work.py`）
+### 12. `HeightWorkDetector` — 登高无安全带（`height_work.py`）
 
 **目标标签**：`person-on-ladder` / `person-on-scaffolding`、`ladder` / `scaffolding`、`safety harness` / `harness`
 
@@ -214,7 +265,7 @@ def detect(
 
 ---
 
-### 12. `GloveDetector` — 未佩戴手套（`glove.py`）
+### 13. `GloveDetector` — 未佩戴手套（`glove.py`）
 
 **目标标签**：`person`、`hand`、`glove` / `industrial glove`
 
@@ -292,6 +343,7 @@ def detect(
 | `departure` | 离岗监控区域 | `DepartureDetector` |
 | `mobile phone` / `phone` / `cell phone` | 正在使用的手机 | `PlayPhoneDetector` |
 | `coal` / `coal pile` | 越界煤堆 | `CoalDetector` |
+| `conveyor_belt` | 皮带/煤流候选区域（待 VL 复核异物） | `CoalForeignObjectDetector` |
 | `dark coal residue` | 车厢内残留煤块 | `EmptyTruckDetector` |
 | `alarm-no-safety-belt` | 登高未系安全带 | `HeightWorkDetector` |
 | `hand` | 未戴手套的手 | `GloveDetector` |

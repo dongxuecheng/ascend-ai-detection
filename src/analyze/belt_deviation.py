@@ -1,0 +1,169 @@
+### 皮带跑偏检测
+import cv2
+import numpy as np
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+
+from utils.obj import Box
+from utils.filter import score_filter, label_filter
+from utils.logger import setup_logger
+
+logger = setup_logger("belt_deviation")
+
+
+class BeltDeviationDetector:
+    """
+    皮带跑偏检测器（算法码 33）。
+
+    逻辑：
+      1. 过滤出 conveyor belt 目标。
+      2. 将 belt 的 RLE mask 解码为二值图并提取轮廓，转为 Shapely Polygon。
+      3. 对 U 型/C 型断裂 mask 使用凸包补全。
+      4. 判断 belt 是否与围栏相交但未完全在围栏内部。
+      5. 越界面积占比超过阈值时，判定为跑偏违规。
+    """
+
+    def __init__(
+        self,
+        belt_min_score: float = 0.5,
+        outside_ratio_thresh: float = 0.1,
+        min_contour_area: float = 10.0,
+    ):
+        """
+        :param belt_min_score: conveyor belt 最低置信度
+        :param outside_ratio_thresh: 皮带越界面积占比阈值，超过则判定为跑偏
+        :param min_contour_area: 轮廓最小面积，过滤噪点
+        """
+        self.belt_min_score = belt_min_score
+        self.outside_ratio_thresh = outside_ratio_thresh
+        self.min_contour_area = min_contour_area
+
+    @staticmethod
+    def _to_polygon_coords(fence) -> list[tuple[float, float]]:
+        """把围栏坐标统一转成 Shapely Polygon 可接受的 (x, y) 列表。"""
+        if hasattr(fence, "tolist"):
+            fence = fence.tolist()
+        coords = []
+        for pt in fence:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                coords.append((float(pt[0]), float(pt[1])))
+        return coords
+
+    def _mask_to_polygon(self, box: Box, image_width: int, image_height: int):
+        """
+        将 Box 的 mask 解码并转为 Shapely 多边形，返回 (polygon, area)。
+        对 U 型/C 型缺口使用凸包补全。
+        """
+        mask_array = box.compute_mask_array(image_width, image_height)
+        if mask_array is None:
+            return None, 0.0
+
+        contours, _ = cv2.findContours(mask_array, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None, 0.0
+
+        polys = []
+        for cnt in contours:
+            if cv2.contourArea(cnt) < self.min_contour_area:
+                continue
+
+            contour = np.squeeze(cnt)
+            if len(contour) < 3:
+                continue
+
+            poly = Polygon(contour)
+            poly = poly.buffer(0) if not poly.is_valid else poly
+            polys.append(poly)
+
+        if not polys:
+            return None, 0.0
+
+        belt_poly = unary_union(polys)
+        # 凸包补全，处理 U 型/C 型断裂
+        belt_poly = belt_poly.convex_hull
+
+        return belt_poly, float(belt_poly.area)
+
+    def detect(
+        self,
+        predictions: list[Box],
+        fences=None,
+        device_id: str = "",
+        image_width: int = 0,
+        image_height: int = 0,
+    ) -> list[Box]:
+        """
+        皮带跑偏检测入口。
+
+        :param predictions: 当前帧所有检测框
+        :param fences: 电子围栏坐标列表
+        :param device_id: 设备ID
+        :param image_width: 原图宽度，用于 mask 解码
+        :param image_height: 原图高度，用于 mask 解码
+        :return: 跑偏的 conveyor belt Box 列表
+        """
+        if fences is None or fences == []:
+            return []
+
+        if image_width <= 0 or image_height <= 0:
+            logger.warning(f"[device={device_id}] 无法确定图像尺寸，跳过皮带跑偏检测")
+            return []
+
+        # 构建围栏多边形
+        fence_polygons = []
+        for i, fence in enumerate(fences):
+            coords = self._to_polygon_coords(fence)
+            if len(coords) < 3:
+                logger.warning(f"[device={device_id}] 围栏-{i} 坐标点不足3个，跳过: {coords}")
+                continue
+            try:
+                poly = Polygon(coords)
+                poly = poly.buffer(0) if not poly.is_valid else poly
+                fence_polygons.append(poly)
+            except Exception as e:
+                logger.error(f"[device={device_id}] 围栏-{i} 创建 Polygon 失败: {e}")
+                continue
+
+        if not fence_polygons:
+            logger.warning(f"[device={device_id}] 没有有效的围栏多边形，跳过皮带跑偏检测")
+            return []
+
+        # 过滤皮带目标
+        belt_boxes = label_filter(predictions, ["conveyor belt"])
+        belt_boxes = score_filter(belt_boxes, self.belt_min_score)
+
+        result = []
+        used_ids = set()
+
+        for belt in belt_boxes:
+            bid = id(belt)
+            if bid in used_ids:
+                continue
+
+            belt_poly, belt_area = self._mask_to_polygon(belt, image_width, image_height)
+            if belt_poly is None or belt_area <= 0:
+                continue
+
+            for f_idx, fence_poly in enumerate(fence_polygons):
+                if not belt_poly.intersects(fence_poly):
+                    continue
+
+                # 完全在围栏内部视为正常
+                if belt_poly.within(fence_poly):
+                    continue
+
+                # 计算越界比例
+                intersection_area = float(belt_poly.intersection(fence_poly).area)
+                outside_area = belt_area - intersection_area
+                outside_ratio = outside_area / belt_area if belt_area > 0 else 0.0
+
+                if outside_ratio > self.outside_ratio_thresh:
+                    logger.warning(
+                        f"[device={device_id}] 皮带跑偏触发 | 围栏-{f_idx}, "
+                        f"box={belt.box}, score={belt.score:.3f}, outside_ratio={outside_ratio:.2%}"
+                    )
+                    result.append(belt)
+                    used_ids.add(bid)
+                    break  # 命中任一围栏即报出
+
+        return result

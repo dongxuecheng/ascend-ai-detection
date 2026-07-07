@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['0', '8', '14', '34', '38', '49', '52', '53', '56', '59']
+supported_codes: ['0', '8', '10', '14', '33', '34', '38', '49', '50', '52', '53', '56', '59']
 code_descriptions:
 - code: '0'
   descriptions: 未戴安全帽
@@ -51,7 +51,9 @@ sam3_prompts:
   prompts: [person]
   return_mask: false
 - code: '10'
-  prompts: [person, work clothes, reflective vest, uniform]
+  prompts: [person, clothes, work clothes, clothing, reflective vest, reflective clothing,
+    high-visibility strip, high-vis strip, vest, orange clothes, reflective strip, uniform,
+    red hat, red helmet, red hard hat]
   return_mask: false
 - code: '14'
   prompts: [cigarette, person, hand, head]
@@ -64,7 +66,7 @@ sam3_prompts:
   return_mask: false
 - code: '33'
   prompts: [conveyor belt]
-  return_mask: false
+  return_mask: true
 - code: '34'
   prompts: [person]
   return_mask: false
@@ -81,7 +83,7 @@ sam3_prompts:
   prompts: [coal pile, coal]
   return_mask: true
 - code: '50'
-  prompts: [foreign object, coal]
+  prompts: [conveyor belt]
   return_mask: false
 - code: '52'
   prompts: [person, leg, truck bed]
@@ -146,13 +148,16 @@ yolo_pre_detect:
 algorithm_detectors:
 - {code: '0', detectors: [HelmetDetector]}
 - {code: '8', detectors: [ZoneDetector]}
+- {code: '10', detectors: [VestDetector]}
 - {code: '14', detectors: [SmokingDetector]}
+- {code: '33', detectors: [BeltDeviationDetector]}
 - {code: '34', detectors: [SingleDetector]}
 - {code: '52', detectors: [CarDetector]}
 - {code: '53', detectors: [ExtinguisherDetector]}
 - {code: '38', detectors: [DepartureDetector]}
 - {code: '56', detectors: [PlayPhoneDetector]}
 - {code: '49', detectors: [CoalDetector]}
+- {code: '50', detectors: [CoalForeignObjectDetector]}
 - {code: '59', detectors: [EmptyTruckDetector]}
 - {code: '58', detectors: [HeightWorkDetector]}
 - {code: '200', detectors: [GloveDetector, ShieldDetector]}
@@ -165,6 +170,7 @@ algorithm_detectors:
 # module: 对应的 VL prompt 模块名（llm/prompts/ 下的文件名，不含 .py）
 # 未配置的算法码默认不启用 VL 复核
 algorithm_vl_config:
+- {code: '50', enabled: true, module: coal_foreign_object}
 - {code: '58', enabled: true, module: height_work}
 - {code: '205', enabled: true, module: safety}
 
@@ -173,13 +179,16 @@ algorithm_vl_config:
 algorithm_intervals:
 - {code: '0', interval: 5.0}
 - {code: '8', interval: 5.0}
+- {code: '10', interval: 5.0}
 - {code: '14', interval: 5.0}
+- {code: '33', interval: 5.0}
 - {code: '34', interval: 2.0}
 - {code: '52', interval: 5.0}
 - {code: '53', interval: 5.0}
 - {code: '38', interval: 5.0}
 - {code: '56', interval: 5.0}
 - {code: '49', interval: 600.0}
+- {code: '50', interval: 5.0}
 - {code: '58', interval: 5.0}
 - {code: '59', interval: 5.0}
 - {code: '200', interval: 5.0}
@@ -194,11 +203,14 @@ algorithm_classifiers:
 alert_dedup:
 - {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '10', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
+- {code: '33', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '34', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '56', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '38', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '49', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '50', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '59', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '58', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
