@@ -124,9 +124,11 @@ AIDetection/
 - `ALGM_PRE_YOLO_MODEL_DETECT_CLASSES`：每个算法码在各 YOLO 模型上要预检的类别
 - `ALGORITHM_DETECTORS`：算法码到检测器类名的映射
 - `ALERT_DEDUP_CONFIG`：各算法码的报警去重参数
+- `ALGORITHM_INTERVALS`：各算法码的检测间隔（秒），`StreamWorker` 用其控制任务分析频率
+- `DEFAULT_ALGORITHM_INTERVAL`：未配置间隔的算法码默认检测间隔（秒），默认 1.0
 - `REQUEST_INTERVAL`：任务同步间隔（秒），默认 10
 
-> `config/algorithms.yaml` 中所有按算法码配置的地方统一使用列表内联对象格式，每项必须含 `code` 字段，例如 `{code: '8'}`、`{code: '34', detectors: [ZoneDetector]}`。`yolo_model_configs` 则使用列表内联对象，每项必须含 `name` 字段。
+> `config/algorithms.yaml` 中所有按算法码配置的地方统一使用列表内联对象格式，每项必须含 `code` 字段，例如 `{code: '8'}`、`{code: '34', detectors: [ZoneDetector]}`、`{code: '8', interval: 2.0}`。`yolo_model_configs` 则使用列表内联对象，每项必须含 `name` 字段。
 
 ### 2. 任务管理层 (`task/`)
 

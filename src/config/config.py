@@ -51,6 +51,15 @@ def _load_label_map_from_file(label_map_file: str) -> Dict[str, str]:
 # 启动时加载一次，供 BaseConfig 使用
 _ALGO_CONFIG = _load_algorithms_yaml()
 
+# 算法默认检测间隔（秒），在模块级计算以避免 Pydantic 字段默认值中无法引用其他字段的问题
+_DEFAULT_ALGORITHM_INTERVAL = float(_ALGO_CONFIG.get("default_algorithm_interval", 1.0))
+_ALGORITHM_INTERVALS_RAW = _ALGO_CONFIG.get("algorithm_intervals", [])
+_ALGORITHM_INTERVALS = {
+    str(_item.get("code")): float(_item.get("interval", _DEFAULT_ALGORITHM_INTERVAL))
+    for _item in _ALGORITHM_INTERVALS_RAW
+    if isinstance(_item, dict) and "code" in _item
+}
+
 
 class BaseConfig(BaseModel):
     """公共配置基类，各环境共享的默认值在此定义"""
@@ -165,6 +174,11 @@ class BaseConfig(BaseModel):
         for _item in _detector_raw
         if isinstance(_item, dict) and "code" in _item
     }
+
+    # 算法代码 -> 检测间隔（秒），StreamWorker 用其控制任务分析频率
+    # 未在 algorithms.yaml 中配置的算法码，使用 DEFAULT_ALGORITHM_INTERVAL
+    DEFAULT_ALGORITHM_INTERVAL: float = _DEFAULT_ALGORITHM_INTERVAL
+    ALGORITHM_INTERVALS: Dict[str, float] = _ALGORITHM_INTERVALS
 
     # 分类模型配置（统一格式：列表，每项含 name + 模型参数）
     _raw_cls_configs: List[dict] = _ALGO_CONFIG.get("classification_configs", [])

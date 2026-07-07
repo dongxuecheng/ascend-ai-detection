@@ -169,6 +169,21 @@ algorithm_detectors:
 - {code: '204', detectors: [ZoneDetector]}
 - {code: '205', detectors: [SafetyDetector]}
 
+# 算法码 -> 检测间隔（秒），StreamWorker 据此判断任务是否进入 ready 状态
+# 未配置的算法码使用 DEFAULT_ALGORITHM_INTERVAL（默认 1.0 秒）
+algorithm_intervals:
+- {code: '0', interval: 5.0}
+- {code: '8', interval: 5.0}
+- {code: '14', interval: 5.0}
+- {code: '34', interval: 2.0}
+- {code: '52', interval: 5.0}
+- {code: '53', interval: 5.0}
+- {code: '58', interval: 5.0}
+- {code: '200', interval: 5.0}
+- {code: '201', interval: 5.0}
+- {code: '204', interval: 5.0}
+- {code: '205', interval: 5.0}
+
 # 分类模型配置（用于对规则引擎检出的违规目标进行二次确认）
 classification_configs:
 - name: resnet_smoke

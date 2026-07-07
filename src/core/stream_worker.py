@@ -493,9 +493,11 @@ class StreamWorker(threading.Thread):
 
                 with self.lock:
                     for task in self.tasks:
-                        interval = task.sleepJudgeTime
-                        if interval is None or interval <= 0:
-                            interval = 1.0
+                        # 使用 algorithms.yaml 中按算法码配置的检测间隔
+                        algo_code = str(task.algorithmCode)
+                        interval = config.ALGORITHM_INTERVALS.get(
+                            algo_code, config.DEFAULT_ALGORITHM_INTERVAL
+                        )
                         last_run = self.task_last_run.get(task.id, 0)
                         if now - last_run >= interval:
                             ready_tasks.append(task)
