@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['8', '34', '14', '0', '52', '53']
+supported_codes: ['8', '34', '14', '0', '52', '53', '38', '56', '49']
 code_descriptions:
 - code: '0'
   descriptions: 未戴安全帽
@@ -79,7 +79,7 @@ sam3_prompts:
   return_mask: false
 - code: '49'
   prompts: [coal pile, coal]
-  return_mask: false
+  return_mask: true
 - code: '50'
   prompts: [foreign object, coal]
   return_mask: false
@@ -102,8 +102,8 @@ sam3_prompts:
   prompts: [person, hand, mobile phone, phone]
   return_mask: false
 - code: '58'
-  prompts: [person, harness, rolled safety rope, safety rope, elevating work platform,
-    metal structure]
+  prompts: [person-on-ladder, person-on-scaffolding, ladder, scaffolding, safety harness,
+    harness]
   return_mask: true
 - code: '59'
   prompts: [vehicle, truck, cargo]
@@ -122,9 +122,14 @@ sam3_urls:
 - {code: '0', url: 'http://192.168.100.75:18002/predict-person-about-small-object'}
 - {code: '52', url: 'http://192.168.100.75:18002/predict'}
 - {code: '53', url: 'http://192.168.100.75:18002/predict'}
+- {code: '38', url: 'http://192.168.100.75:18002/predict'}
+- {code: '56', url: 'http://192.168.100.75:18002/predict'}
+- {code: '58', url: 'http://192.168.100.75:18002/predict'}
+- {code: '49', url: 'http://192.168.100.75:18002/predict'}
 
 fence_algorithms:
 - {code: '8'}
+- {code: '49'}
 
 use_yolo_boxes:
 - {code: '200'}
@@ -154,6 +159,9 @@ yolo_pre_detect:
 - {code: '0', yolo11_plan: [person]}
 - {code: '52', yolo11_plan: [person]}
 - {code: '53', yolo11_plan: [person]}
+- {code: '38', yolo11_plan: [person]}
+- {code: '56', yolo11_plan: [person]}
+- {code: '58', yolo11_plan: [person]}
 
 
 algorithm_detectors:
@@ -163,7 +171,10 @@ algorithm_detectors:
 - {code: '34', detectors: [SingleDetector]}
 - {code: '52', detectors: [CarDetector]}
 - {code: '53', detectors: [ExtinguisherDetector]}
-- {code: '58', detectors: [SafetyDetector]}
+- {code: '38', detectors: [DepartureDetector]}
+- {code: '56', detectors: [PlayPhoneDetector]}
+- {code: '49', detectors: [CoalDetector]}
+- {code: '58', detectors: [SafetyDetector, HeightWorkDetector]}
 - {code: '200', detectors: [GloveDetector, ShieldDetector]}
 - {code: '201', detectors: [HelmetDetector, ExposedArmLegDetector, GloveDetector]}
 - {code: '204', detectors: [ZoneDetector]}
@@ -178,6 +189,9 @@ algorithm_intervals:
 - {code: '34', interval: 2.0}
 - {code: '52', interval: 5.0}
 - {code: '53', interval: 5.0}
+- {code: '38', interval: 5.0}
+- {code: '56', interval: 5.0}
+- {code: '49', interval: 600.0}
 - {code: '58', interval: 5.0}
 - {code: '200', interval: 5.0}
 - {code: '201', interval: 5.0}
@@ -208,3 +222,7 @@ alert_dedup:
 - {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
 - {code: '34', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '56', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '38', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '49', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '58', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}

@@ -14,6 +14,10 @@ from analyze.single import SingleDetector
 from analyze.smoke import SmokingDetector
 from analyze.car import CarDetector
 from analyze.extinguisher import ExtinguisherDetector
+from analyze.departure import DepartureDetector
+from analyze.play_phone import PlayPhoneDetector
+from analyze.height_work import HeightWorkDetector
+from analyze.coal import CoalDetector
 
 logger = setup_logger("analyzer")
 
@@ -29,6 +33,10 @@ _DETECTOR_CLASSES = {
     "SmokingDetector": SmokingDetector,
     "CarDetector": CarDetector,
     "ExtinguisherDetector": ExtinguisherDetector,
+    "DepartureDetector": DepartureDetector,
+    "PlayPhoneDetector": PlayPhoneDetector,
+    "HeightWorkDetector": HeightWorkDetector,
+    "CoalDetector": CoalDetector,
 }
 
 # 检测器类名 -> 单例实例

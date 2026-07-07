@@ -43,13 +43,13 @@ class ExtinguisherDetector:
         person_boxes = score_filter(person_boxes, 0.8)
 
         fire_boxes = label_filter(predictions, ['fire', 'flame'])
-        fire_boxes = score_filter(fire_boxes, 0.5)
+        fire_boxes = score_filter(fire_boxes, 0.8)
 
         extinguisher_boxes = label_filter(
             predictions,
             ['extinguisher', 'fire extinguisher', 'fire extinguisher cabinet']
         )
-        extinguisher_boxes = score_filter(extinguisher_boxes, 0.4)
+        extinguisher_boxes = score_filter(extinguisher_boxes, 0.5)
 
         # 不存在人员或火情，不触发判定
         if not person_boxes or not fire_boxes:

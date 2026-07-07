@@ -129,6 +129,8 @@ AIDetection/
 - `REQUEST_INTERVAL`：任务同步间隔（秒），默认 10
 
 > `config/algorithms.yaml` 中所有按算法码配置的地方统一使用列表内联对象格式，每项必须含 `code` 字段，例如 `{code: '8'}`、`{code: '34', detectors: [ZoneDetector]}`、`{code: '8', interval: 2.0}`。`yolo_model_configs` 则使用列表内联对象，每项必须含 `name` 字段。
+>
+> **纯 YOLO 算法（不需要 SAM3）**：不配置该算法码的 `sam3_prompts` 即可。`StreamWorker` 检测到该算法码没有 prompt 时，会直接使用 YOLO 预检测结果作为分析输入。此时必须为该算法码配置 `yolo_pre_detect`，否则 YOLO 不会运行，分析输入将为空。
 
 ### 2. 任务管理层 (`task/`)
 
@@ -192,6 +194,31 @@ AIDetection/
   2. 当同时存在 person 和 fire/flame，且未检测到 extinguisher 时，判定为违规
   3. 返回火情目标 `[fire/flame]` 作为违规位置
 
+- **`departure.py`**：
+  1. 过滤 `person` 并在围栏内（如指定）计数
+  2. 记录最后一次检测到人员的时间
+  3. 当连续 `duration_seconds` 秒内无人员时，判定为离岗/脱岗违规
+  4. 返回代表监控区域的 `departure` Box
+
+- **`play_phone.py`**：
+  1. 分别过滤 `person`、`hand`、`mobile phone/phone`
+  2. 过滤掉孤立的手和手机（不与 person 相交）
+  3. 检查手与手机是否存在明显重叠
+  4. 返回与之相交的手机 Box 作为违规目标
+
+- **`height_work.py`**（专门用于算法码 58）：
+  1. 过滤 `person-on-ladder` / `person-on-scaffolding`、梯子/脚手架、安全带
+  2. 检查登高人员是否与梯子/脚手架相交
+  3. 检查该人员是否佩戴 `safety harness` / `harness`（安全带阈值较低，默认 0.3）
+  4. 未佩戴时返回扩展后的合并框，label 为 `alarm-no-safety-belt`
+
+- **`coal.py`**：
+  1. 过滤 `coal` / `coal pile` 目标
+  2. 将围栏转为 Shapely Polygon
+  3. 解码煤堆 RLE mask 并提取轮廓，转换为全局坐标多边形
+  4. 检查煤堆 mask 是否与任一围栏相交
+  5. 相交则返回该煤堆 Box 作为违规目标
+
 ### 5. 工具层 (`utils/`)
 
 - **`obj.py`**：核心 `Box` 类。
@@ -223,7 +250,7 @@ AIDetection/
 │                           main.py                           │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
 │  │ TaskManager │  │ RTSPClient  │  │ analyze.*           │ │
-│  │ (task/...)  │  │ (stream/...)│  │ (helmet/glove/zone/car/extinguisher) │ │
+│  │ (task/...)  │  │ (stream/...)│  │ (helmet/glove/zone/car/extinguisher/departure/play_phone/height_work/coal) │ │
 │  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘ │
 └─────────┼────────────────┼────────────────────┼────────────┘
           │                │                    │

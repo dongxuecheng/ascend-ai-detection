@@ -582,15 +582,31 @@ class StreamWorker(threading.Thread):
                 with self.lock:
                     for task in ready_tasks:
                         try:
-                            if len(all_boxes) == 0:
+                            algo_code = str(task.algorithmCode)
+                            # 判断该任务是否需要 SAM3：配置了 prompt，或未配置 prompt 但任务带围栏（回退到 person）
+                            sam3_prompts = config.ALGORITHM_SAM3_PROMPT.get(algo_code, [])
+                            if algo_code not in config.ALGORITHM_SAM3_PROMPT and task.electricFence:
+                                sam3_prompts = ["person"]
+
+                            # 未配置 SAM3 的算法任务，直接使用 YOLO 预检测结果作为输入框
+                            if not sam3_prompts and yolo_boxes:
+                                task_boxes = list(yolo_boxes)
+                                logger.info(
+                                    f"任务未配置 SAM3 prompt，使用 YOLO 框分析 | "
+                                    f"task={task.id}, algo={algo_code}, boxes={len(task_boxes)}"
+                                )
+                            else:
+                                task_boxes = all_boxes
+
+                            if len(task_boxes) == 0:
                                 logger.debug(f"当前帧未检测到任何目标，仍继续分析 task={task.id}, algo={task.algorithmCode}")
                             else:
-                                logger.info(f"开始分析 task={task.id}, algo={task.algorithmCode}, input_boxes={len(all_boxes)}")
+                                logger.info(f"开始分析 task={task.id}, algo={task.algorithmCode}, input_boxes={len(task_boxes)}")
                             fences = self._get_fences_for_task(task)
                             image_width = frame.shape[1]
                             image_height = frame.shape[0]
-                            violations = analyze_for_task(all_boxes, task, fences=fences, image_width=image_width, image_height=image_height)
-                            if len(all_boxes) > 0 and len(violations) > 0:
+                            violations = analyze_for_task(task_boxes, task, fences=fences, image_width=image_width, image_height=image_height)
+                            if len(task_boxes) > 0 and len(violations) > 0:
                                 logger.info(f"分析完成 task={task.id}, 规则引擎违规数={len(violations)}")
                             if len(violations) == 0:
                                 # 即使没有违规，也记录分析时间，避免频繁进入 ready 状态
@@ -643,7 +659,7 @@ class StreamWorker(threading.Thread):
                                 # 绘制 OSD（检测框、违规高亮、告警横幅、时间戳）
                                 alert_frame = render_alert_frame(
                                     frame=frame,
-                                    all_boxes=all_boxes,
+                                    all_boxes=task_boxes,
                                     violations=violations,
                                     task=task,
                                     fences=fences,
