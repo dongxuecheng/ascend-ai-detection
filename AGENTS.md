@@ -219,6 +219,12 @@ AIDetection/
   4. 检查煤堆 mask 是否与任一围栏相交
   5. 相交则返回该煤堆 Box 作为违规目标
 
+- **`empty_truck.py`**：
+  1. 过滤 `truck bed` 和 `dark coal residue` 目标
+  2. 计算煤块与车厢的交集面积
+  3. 计算 IoF = 交集面积 / 煤块面积
+  4. IoF 超过阈值（默认 0.99）时，返回该煤块 Box 作为违规目标
+
 ### 5. 工具层 (`utils/`)
 
 - **`obj.py`**：核心 `Box` 类。
@@ -250,7 +256,7 @@ AIDetection/
 │                           main.py                           │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
 │  │ TaskManager │  │ RTSPClient  │  │ analyze.*           │ │
-│  │ (task/...)  │  │ (stream/...)│  │ (helmet/glove/zone/car/extinguisher/departure/play_phone/height_work/coal) │ │
+│  │ (task/...)  │  │ (stream/...)│  │ (helmet/glove/zone/car/extinguisher/departure/play_phone/height_work/coal/empty_truck) │ │
 │  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘ │
 └─────────┼────────────────┼────────────────────┼────────────┘
           │                │                    │

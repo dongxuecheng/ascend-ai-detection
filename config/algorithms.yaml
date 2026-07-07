@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['8', '34', '14', '0', '52', '53', '38', '56', '49']
+supported_codes: ['0', '8', '14', '34', '38', '49', '52', '53', '56', '59']
 code_descriptions:
 - code: '0'
   descriptions: 未戴安全帽
@@ -106,7 +106,7 @@ sam3_prompts:
     harness]
   return_mask: true
 - code: '59'
-  prompts: [vehicle, truck, cargo]
+  prompts: [truck bed, dark coal residue]
   return_mask: false
 - code: '200'
   prompts: [person, hand, glove, face shield, face]
@@ -126,6 +126,7 @@ sam3_urls:
 - {code: '56', url: 'http://192.168.100.75:18002/predict'}
 - {code: '58', url: 'http://192.168.100.75:18002/predict'}
 - {code: '49', url: 'http://192.168.100.75:18002/predict'}
+- {code: '59', url: 'http://192.168.100.75:18002/predict'}
 
 fence_algorithms:
 - {code: '8'}
@@ -174,6 +175,7 @@ algorithm_detectors:
 - {code: '38', detectors: [DepartureDetector]}
 - {code: '56', detectors: [PlayPhoneDetector]}
 - {code: '49', detectors: [CoalDetector]}
+- {code: '59', detectors: [EmptyTruckDetector]}
 - {code: '58', detectors: [SafetyDetector, HeightWorkDetector]}
 - {code: '200', detectors: [GloveDetector, ShieldDetector]}
 - {code: '201', detectors: [HelmetDetector, ExposedArmLegDetector, GloveDetector]}
@@ -193,6 +195,7 @@ algorithm_intervals:
 - {code: '56', interval: 5.0}
 - {code: '49', interval: 600.0}
 - {code: '58', interval: 5.0}
+- {code: '59', interval: 5.0}
 - {code: '200', interval: 5.0}
 - {code: '201', interval: 5.0}
 - {code: '204', interval: 5.0}
@@ -218,6 +221,7 @@ algorithm_classifiers:
 - {code: '14', classifiers: [resnet_smoke]}
 
 alert_dedup:
+- {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
 - {code: '34', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
@@ -225,4 +229,5 @@ alert_dedup:
 - {code: '56', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '38', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '49', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '59', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '58', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
