@@ -60,6 +60,18 @@ _ALGORITHM_INTERVALS = {
     if isinstance(_item, dict) and "code" in _item
 }
 
+# 算法码 -> VL 大模型二次复核配置
+# 结构示例：{code: '58', enabled: true, module: height_work}
+_ALGORITHM_VL_CONFIG_RAW = _ALGO_CONFIG.get("algorithm_vl_config", [])
+_ALGORITHM_VL_CONFIG = {
+    str(_item.get("code")): {
+        "enabled": bool(_item.get("enabled", False)),
+        "module": str(_item.get("module", "")),
+    }
+    for _item in _ALGORITHM_VL_CONFIG_RAW
+    if isinstance(_item, dict) and "code" in _item
+}
+
 
 class BaseConfig(BaseModel):
     """公共配置基类，各环境共享的默认值在此定义"""
@@ -89,9 +101,9 @@ class BaseConfig(BaseModel):
 
     # ---- VL 大模型配置 ----
     VL_ENABLED: bool = os.getenv("VL_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-    VL_API_URL: str = os.getenv("VL_API_URL", "https://api.siliconflow.cn/v1")
-    VL_API_KEY: str = os.getenv("VL_API_KEY", "sk-koduolhsfnmpzojdeeehwvxglwbrxoybwthlclzirskjkszr")
-    VL_MODEL: str = os.getenv("VL_MODEL", "Qwen/Qwen3.5-397B-A17B")
+    VL_API_URL: str = os.getenv("VL_API_URL", "http://192.168.100.75:18000/v1")
+    VL_API_KEY: str = os.getenv("VL_API_KEY", "")
+    VL_MODEL: str = os.getenv("VL_MODEL", "/models/qwen3-vl-4b")
     # 是否开启大模型思考链（reasoning/thinking），默认关闭以加快响应
     VL_ENABLE_THINKING: bool = os.getenv("VL_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 
@@ -179,6 +191,11 @@ class BaseConfig(BaseModel):
     # 未在 algorithms.yaml 中配置的算法码，使用 DEFAULT_ALGORITHM_INTERVAL
     DEFAULT_ALGORITHM_INTERVAL: float = _DEFAULT_ALGORITHM_INTERVAL
     ALGORITHM_INTERVALS: Dict[str, float] = _ALGORITHM_INTERVALS
+
+    # 算法代码 -> VL 大模型二次复核配置
+    # 未在 algorithms.yaml 中配置的算法码，默认不启用
+    # 每项为 {enabled: bool, module: str}
+    ALGORITHM_VL_CONFIG: Dict[str, dict] = _ALGORITHM_VL_CONFIG
 
     # 分类模型配置（统一格式：列表，每项含 name + 模型参数）
     _raw_cls_configs: List[dict] = _ALGO_CONFIG.get("classification_configs", [])

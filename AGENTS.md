@@ -126,11 +126,18 @@ AIDetection/
 - `ALERT_DEDUP_CONFIG`：各算法码的报警去重参数
 - `ALGORITHM_INTERVALS`：各算法码的检测间隔（秒），`StreamWorker` 用其控制任务分析频率
 - `DEFAULT_ALGORITHM_INTERVAL`：未配置间隔的算法码默认检测间隔（秒），默认 1.0
+- `ALGORITHM_VL_CONFIG`：各算法码的 VL 大模型二次复核配置，包含 `enabled` 和 `module` 两个字段，默认不启用
 - `REQUEST_INTERVAL`：任务同步间隔（秒），默认 10
 
 > `config/algorithms.yaml` 中所有按算法码配置的地方统一使用列表内联对象格式，每项必须含 `code` 字段，例如 `{code: '8'}`、`{code: '34', detectors: [ZoneDetector]}`、`{code: '8', interval: 2.0}`。`yolo_model_configs` 则使用列表内联对象，每项必须含 `name` 字段。
 >
 > **纯 YOLO 算法（不需要 SAM3）**：不配置该算法码的 `sam3_prompts` 即可。`StreamWorker` 检测到该算法码没有 prompt 时，会直接使用 YOLO 预检测结果作为分析输入。此时必须为该算法码配置 `yolo_pre_detect`，否则 YOLO 不会运行，分析输入将为空。
+>
+> **VL 大模型二次复核**：
+>   1. 在 `algorithm_vl_config` 中按算法码配置，例如 `{code: '58', enabled: true, module: height_work}`。
+>   2. `enabled` 控制是否启用该算法码的 VL 复核；`module` 指定 `llm/prompts/` 下对应的 prompt 模块名（不含 `.py`）。
+>   3. 只有同时满足 `enabled=true`、`VL_ENABLED=true`、且配置了有效的 `module` 时，才会调用大模型进行二次确认。
+>   4. prompt 模块放在 `llm/prompts/` 下，每个模块暴露 `PROMPTS` 变量，算法码与模块的映射关系由配置文件决定，不再在代码中硬编码。
 
 ### 2. 任务管理层 (`task/`)
 
@@ -211,6 +218,7 @@ AIDetection/
   2. 检查登高人员是否与梯子/脚手架相交
   3. 检查该人员是否佩戴 `safety harness` / `harness`（安全带阈值较低，默认 0.3）
   4. 未佩戴时返回扩展后的合并框，label 为 `alarm-no-safety-belt`
+  5. 该违规目标会进入 VL 大模型二次复核（见 `llm/prompts/height_work.py` 中 code `58` 的 prompt 配置）
 
 - **`coal.py`**：
   1. 过滤 `coal` / `coal pile` 目标

@@ -75,8 +75,16 @@ def vl_analyze_for_task(
     :return: VL 确认后的违规目标 Box 列表
     """
     algo_code = str(task.algorithmCode)
+
+    # 只有 algorithms.yaml 中显式启用 VL 的算法码才进行大模型二次复核
+    vl_cfg = config.ALGORITHM_VL_CONFIG.get(algo_code, {})
+    if not vl_cfg.get("enabled", False):
+        logger.debug(f"VL 复核已关闭 | algo={algo_code}")
+        return rule_violations
+
     prompts = VL_PROMPTS.get(algo_code)
     if not prompts:
+        logger.warning(f"VL 未配置 prompt 模块 | algo={algo_code}，跳过 VL 复核")
         return rule_violations
 
     client = _get_vl_client()
