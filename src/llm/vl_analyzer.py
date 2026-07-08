@@ -79,7 +79,7 @@ def vl_analyze_for_task(
     # 只有 algorithms.yaml 中显式启用 VL 的算法码才进行大模型二次复核
     vl_cfg = config.ALGORITHM_VL_CONFIG.get(algo_code, {})
     if not vl_cfg.get("enabled", False):
-        logger.debug(f"VL 复核已关闭 | algo={algo_code}")
+        logger.info(f"VL 复核已关闭 | algo={algo_code}")
         return rule_violations
 
     prompts = VL_PROMPTS.get(algo_code)
@@ -140,7 +140,6 @@ def vl_analyze_for_task(
             )
 
             result_json = json.loads(result_str)
-            print("vllm : ", result_json)
             if result_json.get("has_violation", False):
                 logger.warning(f"VL 确认违规 | algo={algo_code} | idx={idx} | label={v.label}")
                 confirmed.append(v)

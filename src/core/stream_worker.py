@@ -8,6 +8,7 @@ from config.config import config
 from utils.logger import setup_logger
 from utils.obj import Box
 from stream.remote_capture import RTSPClient, STATUS_CONNECTED, STATUS_DISCONNECTED, STATUS_NOT_FOUND
+from stream.remote_capture import DECODER_CPU_FFMPEG, DECODER_GPU_NVCUVID
 from task.upload import EventUploader
 from task.getFence import TaskFence
 from detect.sam3 import call_sam3
@@ -73,7 +74,7 @@ class StreamWorker(threading.Thread):
     负责：拉流 → 一次 SAM3 推理 → 分发给关联的多个 Task 各自分析 → 各自上报
     """
 
-    def __init__(self, rtsp_url: str, tasks: List):
+    def __init__(self, rtsp_url: str, tasks: List, gpu_code: int = 0):
         super().__init__(daemon=False)
         self.rtsp_url = rtsp_url
         self.tasks = tasks  # 该流关联的所有 Task
@@ -81,13 +82,17 @@ class StreamWorker(threading.Thread):
         self.capture: Optional[RTSPClient] = None
         self._stream_id: Optional[str] = None
         self.lock = threading.Lock()
+        self.gpu_code = gpu_code
 
         # gRPC 服务端地址与启动参数（用于故障恢复时重建流）
         self._server_address = getattr(config, "STREAM_SERVER_ADDRESS", "192.168.100.74:50051")
         self._stream_start_params = {
             "heartbeat_timeout_ms": 1000000,
+            "decode_interval_ms": 70,
             "use_shared_mem": True,
-            "only_key_frames": True,
+            "only_key_frames": False,
+            "decoder_type": DECODER_GPU_NVCUVID,
+            "gpu_id": self.gpu_code,
         }
 
         # 读帧故障恢复状态
@@ -174,7 +179,7 @@ class StreamWorker(threading.Thread):
         try:
             return self.capture.get_stream_status(self._stream_id)
         except Exception as e:
-            logger.debug(f"[拉流] 查询服务端流状态失败: {self.rtsp_url}, {e}")
+            logger.error(f"[拉流] 查询服务端流状态失败: {self.rtsp_url}, {e}")
             return None
 
     def _recover_stream(self) -> bool:
@@ -199,7 +204,7 @@ class StreamWorker(threading.Thread):
                 try:
                     self.capture.stop_stream(self._stream_id)
                 except Exception as e:
-                    logger.debug(f"[恢复] 停止旧流时异常（可忽略）: {e}")
+                    logger.error(f"[恢复] 停止旧流时异常（可忽略）: {e}")
 
             # 2. 重建 gRPC 连接
             if not self.capture or not self.capture.reconnect():
@@ -335,7 +340,7 @@ class StreamWorker(threading.Thread):
             else:
                 # YOLO 未检测到目标，跳过 SAM3 以节省资源，但仍进入分析流程更新时间累计状态
                 skip_sam3_task_ids.add(task.id)
-                logger.debug(f"YOLO 预检测未通过 task={task.id}, algo={task.algorithmCode}, 跳过 SAM3 但仍继续分析")
+                logger.info(f"YOLO 预检测未通过 task={task.id}, algo={task.algorithmCode}, 跳过 SAM3 但仍继续分析")
 
         return passed_tasks, all_yolo_boxes, skip_sam3_task_ids
 

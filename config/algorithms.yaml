@@ -1,5 +1,11 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
 supported_codes: ['0', '8', '10', '14', '33', '34', '38', '49', '50', '52', '53', '56', '59']
+
+# 可用的 GPU 编码（GPU ID）列表。
+# StreamWorker 创建时会按轮询方式依次使用列表中的 GPU，实现多路流的负载均衡。
+# 空列表或省略该项时，默认使用 [0]。
+gpu_codes: [0, 1]
+
 code_descriptions:
 - code: '0'
   descriptions: 未戴安全帽
@@ -121,26 +127,27 @@ sam3_prompts:
 # 同一 URL 的算法码放在同一个 group 中；未在 groups 中配置的算法码将回退到 config.SAM3_URL_OBJ。
 sam3_url_groups:
   - url: 'http://192.168.100.75:18002/predict'
-    codes: ['8', '34', '52', '53', '38', '56', '58', '49', '59']
+    codes: ['8', '33', '34', '52', '53', '38', '56', '49', '59', '50']
   - url: 'http://192.168.100.75:18002/predict-person-about-small-object'
-    codes: ['0', '14']
+    codes: ['0', '14', '58']
 
 fence_algorithms:
 - {code: '8'}
 - {code: '49'}
+- {code: '33'}
 
 use_yolo_boxes:
 - {code: '200'}
 
 # YOLO 预检测配置：模型详细参数已迁移到 config/models.yaml
 yolo_pre_detect:
-- {code: '8', yolo11_plan: [person]}
-- {code: '34', yolo11_plan: [person]}
-- {code: '14', yolo11_plan: [person]}
 - {code: '0', yolo11_plan: [person]}
+- {code: '8', yolo11_plan: [person]}
+- {code: '14', yolo11_plan: [person]}
+- {code: '34', yolo11_plan: [person]}
+- {code: '38', yolo11_plan: [person]}
 - {code: '52', yolo11_plan: [person]}
 - {code: '53', yolo11_plan: [person]}
-- {code: '38', yolo11_plan: [person]}
 - {code: '56', yolo11_plan: [person]}
 - {code: '58', yolo11_plan: [person]}
 
@@ -188,7 +195,7 @@ algorithm_intervals:
 - {code: '38', interval: 5.0}
 - {code: '56', interval: 5.0}
 - {code: '49', interval: 600.0}
-- {code: '50', interval: 5.0}
+- {code: '50', interval: 30.0}
 - {code: '58', interval: 5.0}
 - {code: '59', interval: 5.0}
 - {code: '200', interval: 5.0}

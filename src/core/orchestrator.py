@@ -38,7 +38,18 @@ class Orchestrator:
         # (deviceAlgorithmIp, deviceChannel) -> StreamWorker
         self.workers: Dict[DeviceKey, StreamWorker] = {}
         self._stop = False
-        self.lock = threading.Lock()
+        # 使用 RLock：_next_gpu_code 内部也需要加锁，可能被 start() 外层已持有锁时调用
+        self.lock = threading.RLock()
+        # GPU 编码轮询索引，创建 StreamWorker 时依次分配
+        self._gpu_index = 0
+
+    def _next_gpu_code(self) -> int:
+        """从配置 GPU_CODES 中轮询取下一个 GPU 编码"""
+        gpu_codes = config.GPU_CODES or [0]
+        with self.lock:
+            code = gpu_codes[self._gpu_index % len(gpu_codes)]
+            self._gpu_index += 1
+            return code
 
     def _build_rtsp_url(self, task) -> Optional[str]:
         """
@@ -115,10 +126,11 @@ class Orchestrator:
                             if not url:
                                 logger.warning(f"设备 {key} 无法获取 RTSP 地址，跳过")
                                 continue
-                            worker = StreamWorker(url, tasks)
+                            gpu_code = self._next_gpu_code()
+                            worker = StreamWorker(url, tasks, gpu_code=gpu_code)
                             worker.start()
                             self.workers[key] = worker
-                            logger.info(f"新增视频流 worker: device={key}, url={url}, 任务数={len(tasks)}")
+                            logger.info(f"新增视频流 worker: device={key}, url={url}, gpu_code={gpu_code}, 任务数={len(tasks)}")
 
                         # ---- Step 3: 移除设备 ----
                         for key in existing_keys - current_keys:
@@ -154,10 +166,11 @@ class Orchestrator:
                                 if not url:
                                     logger.warning(f"设备 {key} 无法获取 RTSP 地址，跳过重建")
                                     continue
-                                new_worker = StreamWorker(url, tasks)
+                                gpu_code = self._next_gpu_code()
+                                new_worker = StreamWorker(url, tasks, gpu_code=gpu_code)
                                 new_worker.start()
                                 self.workers[key] = new_worker
-                                logger.info(f"已重建视频流 worker: device={key}, url={url}, 任务数={len(tasks)}")
+                                logger.info(f"已重建视频流 worker: device={key}, url={url}, gpu_code={gpu_code}, 任务数={len(tasks)}")
 
                 except Exception as e:
                     logger.error(f"Orchestrator 同步异常: {e}", exc_info=True)

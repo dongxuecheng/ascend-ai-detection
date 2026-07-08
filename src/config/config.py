@@ -133,13 +133,20 @@ class BaseConfig(BaseModel):
     # ---- VL 大模型配置 ----
     VL_ENABLED: bool = os.getenv("VL_ENABLED", "true").lower() in ("1", "true", "yes", "on")
     VL_API_URL: str = os.getenv("VL_API_URL", "http://192.168.100.75:18000/v1")
-    VL_API_KEY: str = os.getenv("VL_API_KEY", "")
+    VL_API_KEY: str = os.getenv("VL_API_KEY", "EMPTY")
     VL_MODEL: str = os.getenv("VL_MODEL", "/models/qwen3-vl-4b")
     # 是否开启大模型思考链（reasoning/thinking），默认关闭以加快响应
     VL_ENABLE_THINKING: bool = os.getenv("VL_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 
     # ---- 算法相关配置：必须从 algorithms.yaml 读取，无默认值 ----
     ALGORITHM_CODES: List[str] = _ALGO_CONFIG["supported_codes"]
+
+    # 可用的 GPU 编码（GPU ID）列表，StreamWorker 创建时按轮询方式依次使用
+    GPU_CODES: List[int] = [
+        int(_code)
+        for _code in _ALGO_CONFIG.get("gpu_codes", [0])
+        if _code is not None
+    ] or [0]
 
     # 解析 code_descriptions，用于本地保存时按类别分目录
     _code_desc_raw: List[dict] = _ALGO_CONFIG.get("code_descriptions", [])

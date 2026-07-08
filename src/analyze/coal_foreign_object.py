@@ -21,7 +21,7 @@ class CoalForeignObjectDetector:
 
     def __init__(
         self,
-        belt_min_score: float = 0.5,
+        belt_min_score: float = 0.7,
         belt_min_area: float = 1000.0,
     ):
         """
