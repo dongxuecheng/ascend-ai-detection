@@ -496,6 +496,8 @@ class YOLOTritonFast:
         # 解码：从模型输出提取 xyxy（input_size 空间）+ scores + cls_ids
         if self.output_format == "yolo_v12_end2end":
             boxes_xyxy, scores, cls_ids = self._decode_v12(output, classes)
+        elif self.output_format == "yolo_v5":
+            boxes_xyxy, scores, cls_ids = self._decode_v5(output, classes)
         else:
             boxes_xyxy, scores, cls_ids = self._decode_v11(output, classes)
 
@@ -574,6 +576,45 @@ class YOLOTritonFast:
             return output
         else:
             return results.as_numpy(self.output_name)[0]
+
+    # ---------- 解码：yolo_v5 ----------
+    def _decode_v5(self, output: np.ndarray, classes: Optional[List[int]]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        YOLOv5 输出解码。
+        输出形状: [num_anchors, 5 + num_classes]
+          - [:4]   框中心 xywh
+          - [4]    objectness
+          - [5:]   各类别条件概率
+        最终分数 = objectness * max(class_score)
+        """
+        preds = output                                            # [25200, 9]
+        boxes_xywh = preds[:, :4]
+        obj_scores = preds[:, 4]
+        cls_scores = preds[:, 5:5 + self.num_classes]
+
+        scores = obj_scores * cls_scores.max(axis=1)
+        cls_ids = cls_scores.argmax(axis=1)
+
+        mask = scores >= self.conf_thresh
+        if not mask.any():
+            return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
+        boxes_xywh, scores, cls_ids = boxes_xywh[mask], scores[mask], cls_ids[mask]
+
+        if classes:
+            cls_mask = np.isin(cls_ids, list(classes))
+            if not cls_mask.any():
+                return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
+            boxes_xywh, scores, cls_ids = boxes_xywh[cls_mask], scores[cls_mask], cls_ids[cls_mask]
+
+        x, y, w, h = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
+        boxes_xyxy = np.stack([x - w / 2, y - h / 2, x + w / 2, y + h / 2], axis=1)
+
+        indices = cv2.dnn.NMSBoxes(boxes_xyxy.tolist(), scores.tolist(),
+                                   self.conf_thresh, self.iou_thresh)
+        if len(indices) == 0:
+            return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
+        indices = indices.flatten()
+        return boxes_xyxy[indices], scores[indices], cls_ids[indices]
 
     # ---------- 解码：yolo_v8_v11 ----------
     def _decode_v11(self, output: np.ndarray, classes: Optional[List[int]]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:

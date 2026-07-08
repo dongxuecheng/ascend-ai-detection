@@ -17,6 +17,14 @@ yolo_model_configs:
     conf_thresh: 0.3
     iou_thresh: 0.45
     label_map_file: config/names/yolo12s_face.names
+  - name: yolov5_foreign_objects
+    input_name: images
+    output_name: output0
+    input_size: 640
+    output_format: yolo_v5
+    conf_thresh: 0.5
+    iou_thresh: 0.45
+    label_map_file: config/names/yolov5_foreign_objects.names
 
 classification_configs:
   - name: resnet_smoke

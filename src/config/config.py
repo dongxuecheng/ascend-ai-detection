@@ -116,7 +116,7 @@ class BaseConfig(BaseModel):
     GET_RTSP_URL: str = os.getenv("GET_RTSP_URL", "http://192.168.100.73/open/api/operate/previewURLs")
 
     # 任务同步间隔（秒），docker-compose 中可通过 REQUEST_INTERVAL 覆盖
-    REQUEST_INTERVAL: int = int(os.getenv("REQUEST_INTERVAL", "60"))
+    REQUEST_INTERVAL: int = int(os.getenv("REQUEST_INTERVAL", "180"))
 
     # ---- gRPC RTSP 流媒体后端（C++ 服务）----
     # 主服务端口（共享内存/SHM 模式），业务代码实例化 RTSPClient 时从此读取并传入

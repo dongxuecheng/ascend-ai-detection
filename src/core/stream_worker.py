@@ -88,10 +88,10 @@ class StreamWorker(threading.Thread):
         self._server_address = getattr(config, "STREAM_SERVER_ADDRESS", "192.168.100.74:50051")
         self._stream_start_params = {
             "heartbeat_timeout_ms": 1000000,
-            "decode_interval_ms": 70,
+            # "decode_interval_ms": 70,
             "use_shared_mem": True,
-            "only_key_frames": False,
-            "decoder_type": DECODER_GPU_NVCUVID,
+            "only_key_frames": True,
+            "decoder_type": DECODER_CPU_FFMPEG,
             "gpu_id": self.gpu_code,
         }
 
