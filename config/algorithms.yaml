@@ -138,6 +138,7 @@ fence_algorithms:
 
 use_yolo_boxes:
 - {code: '200'}
+- {code: '50'}
 
 # YOLO 预检测配置：模型详细参数已迁移到 config/models.yaml
 yolo_pre_detect:
@@ -150,6 +151,7 @@ yolo_pre_detect:
 - {code: '53', yolo11_plan: [person]}
 - {code: '56', yolo11_plan: [person]}
 - {code: '58', yolo11_plan: [person]}
+- {code: '50', yolov5_foreign_objects: [dakuai]}
 
 
 algorithm_detectors:
