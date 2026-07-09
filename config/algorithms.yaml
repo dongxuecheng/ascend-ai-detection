@@ -74,7 +74,7 @@ sam3_prompts:
   prompts: [conveyor belt]
   return_mask: true
 - code: '34'
-  prompts: [person]
+  prompts: [person, red hat, red helmet, red hard hat, red cap]
   return_mask: false
 - code: '37'
   prompts: [foreign object, object]

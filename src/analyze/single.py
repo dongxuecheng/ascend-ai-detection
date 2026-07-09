@@ -11,6 +11,9 @@ from utils.logger import setup_logger
 
 logger = setup_logger("single")
 
+# 红帽子相关标签：佩戴红帽子的人员通常具有管理/监护身份，不纳入单人作业统计
+RED_HAT_LABELS = ["red hat", "red helmet", "red hard hat", "red cap"]
+
 
 class SingleDetector:
     """
@@ -59,6 +62,20 @@ class SingleDetector:
             if isinstance(pt, (list, tuple)) and len(pt) >= 2:
                 coords.append((float(pt[0]), float(pt[1])))
         return coords
+
+    def _is_red_hat_person(self, person: Box, predictions: List[Box]) -> bool:
+        """
+        判断某个人员框是否与红帽子目标存在明显重叠。
+        用于把佩戴红帽子的管理人员/监护人排除在单人作业统计之外。
+        """
+        red_hats = [b for b in predictions if b.label in RED_HAT_LABELS]
+        if not red_hats:
+            return False
+        for hat in red_hats:
+            # 红帽子应位于人框头部区域，用 IoM 判断重叠即可
+            if person.iom(hat) > 0.1 or hat.iom(person) > 0.3:
+                return True
+        return False
 
     def _filter_persons(self, predictions: List[Box], fences=None) -> List[Box]:
         """
@@ -131,6 +148,14 @@ class SingleDetector:
             # count == 1：开始计时或延续计时
             if state is None or state.get("start_time") is None:
                 self._states[key] = {"start_time": now, "triggered": False}
+                return []
+
+            # 唯一人员若是红帽子（管理/监护人员），不判定为单人作业
+            if self._is_red_hat_person(persons[0], predictions):
+                logger.info(
+                    f"[device={device_id}] 唯一人员佩戴红帽子，跳过单人作业计时"
+                )
+                self._states[key] = {"start_time": None, "triggered": False}
                 return []
 
             elapsed = now - state["start_time"]
