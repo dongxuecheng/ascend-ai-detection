@@ -92,6 +92,8 @@ class StreamWorker(threading.Thread):
             "use_shared_mem": True,
             "only_key_frames": True,
             "decoder_type": DECODER_CPU_FFMPEG,
+            # "only_key_frames": False,
+            # "decoder_type": DECODER_GPU_NVCUVID,
             "gpu_id": self.gpu_code,
         }
 

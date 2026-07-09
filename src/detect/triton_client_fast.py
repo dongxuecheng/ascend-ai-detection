@@ -350,10 +350,7 @@ class YOLOTritonFast:
                     for out in model_cfg.get("output", []):
                         if out.get("name") == self.output_name:
                             dims = [int(d) for d in out.get("dims", [])]
-                            if max_batch > 0:
-                                shape = (max_batch, *dims)
-                            else:
-                                shape = tuple(dims)
+                            shape = tuple(dims)
                             dtype_str = out.get("data_type", dtype_str)
                             break
                 except Exception as e:

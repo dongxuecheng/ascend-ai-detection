@@ -25,7 +25,7 @@ class BeltDeviationDetector:
 
     def __init__(
         self,
-        belt_min_score: float = 0.5,
+        belt_min_score: float = 0.65,
         outside_ratio_thresh: float = 0.1,
         min_contour_area: float = 10.0,
     ):
