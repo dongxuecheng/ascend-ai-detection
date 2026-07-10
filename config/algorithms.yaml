@@ -68,7 +68,7 @@ sam3_prompts:
   prompts: [fire, flame]
   return_mask: false
 - code: '32'
-  prompts: [person, head, hand]
+  prompts: [person, head, hand, face]
   return_mask: true
 - code: '33'
   prompts: [conveyor belt]

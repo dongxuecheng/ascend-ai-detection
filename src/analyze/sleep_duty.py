@@ -16,10 +16,11 @@ class SleepDutyDetector:
     睡岗检测器。
 
     逻辑：
-      1. 从 SAM3 返回的 Box 中过滤出 person、head、hand（需开启 return_mask）。
+      1. 从 SAM3 返回的 Box 中过滤出 person、head、hand、face（需开启 return_mask）。
       2. 按 mask 重叠度（或 box IoU）为每个 person 分配跟踪 ID，维护每个 ID 的静止积分。
       3. 通过对比相邻帧中 person / head / hand 的 mask 重叠度，判断人员是否静止。
-      4. 当静止时长超过阈值时，输出 sleeping 违规框，由上层 VL 模块统一进行二次确认。
+      4. 如果能看到脸部（SAM3 检出与人绑定的 face），直接判定为未睡岗，清空静止积分。
+      5. 当静止时长超过阈值时，输出 sleeping 违规框，由上层 VL 模块统一进行二次确认。
 
     说明：
       - 本检测器使用简单的 mask/IoU 进行 ID 关联，不依赖 ByteTrack 等外部跟踪器。
@@ -31,7 +32,8 @@ class SleepDutyDetector:
         self,
         person_min_score: float = 0.85,
         person_min_area: float = 5000.0,
-        part_min_score: float = 0.5,
+        part_min_score: float = 0.7,
+        face_min_score: float = 0.8,
         bind_iou_threshold: float = 0.5,
         bind_mask_iom_threshold: float = 0.5,
         still_iom_threshold: float = 0.95,
@@ -42,6 +44,7 @@ class SleepDutyDetector:
         :param person_min_score: person 最低置信度
         :param person_min_area: person 最小面积（像素）
         :param part_min_score: head / hand 最低置信度
+        :param face_min_score: face 最低置信度
         :param bind_iou_threshold: 用 box IoU 绑定部位或关联 ID 时的最小阈值
         :param bind_mask_iom_threshold: 用 mask IoM 绑定部位或关联 ID 时的最小阈值
         :param still_iom_threshold: 判定为静止的最小 mask IoM（重叠度高于此值认为静止）
@@ -51,6 +54,7 @@ class SleepDutyDetector:
         self.person_min_score = person_min_score
         self.person_min_area = person_min_area
         self.part_min_score = part_min_score
+        self.face_min_score = face_min_score
         self.bind_iou_threshold = bind_iou_threshold
         self.bind_mask_iom_threshold = bind_mask_iom_threshold
         self.still_iom_threshold = still_iom_threshold
@@ -191,7 +195,7 @@ class SleepDutyDetector:
         """
         睡岗检测入口。
 
-        :param predictions: SAM3 返回的检测框，需包含 person / head / hand 且带 mask
+        :param predictions: SAM3 返回的检测框，需包含 person / head / hand / face 且带 mask
         :param fences: 区域坐标列表，当前检测不使用，预留以保持接口统一
         :param device_id: 设备 ID，用于日志区分
         :param image_width: 原图宽度
@@ -209,7 +213,7 @@ class SleepDutyDetector:
                 logger.warning(f"[device={device_id}] SleepDutyDetector 未获取到图像宽高，跳过检测")
                 return result
 
-        # 1. 过滤 person / head / hand
+        # 1. 过滤 person / head / hand / face
         person_boxes = label_filter(predictions, ["person"])
         person_boxes = score_filter(person_boxes, self.person_min_score)
         person_boxes = area_filter(person_boxes, self.person_min_area)
@@ -219,6 +223,9 @@ class SleepDutyDetector:
 
         hand_boxes = label_filter(predictions, ["hand"])
         hand_boxes = score_filter(hand_boxes, self.part_min_score)
+
+        face_boxes = label_filter(predictions, ["face"])
+        face_boxes = score_filter(face_boxes, self.face_min_score)
 
         # 2. 清理过期 ID
         expired = [
@@ -248,6 +255,35 @@ class SleepDutyDetector:
                 score = self._overlap_score(hand, person_box, image_width, image_height)
                 if score > self.bind_mask_iom_threshold:
                     matched_hands.append(hand)
+
+            # 脸部绑定：只要能看到脸部，就认为不是睡岗
+            matched_face = None
+            for face in face_boxes:
+                score = self._overlap_score(face, person_box, image_width, image_height)
+                if score > self.bind_mask_iom_threshold:
+                    matched_face = face
+                    break
+
+            if matched_face is not None:
+                # 看到脸：清空积分，不进入静止累计
+                if tdata["score"] > 0:
+                    logger.info(
+                        f"[device={device_id}] ID:{tid} 检测到可见脸部，"
+                        f"静止积分清零 (原 {tdata['score']:.2f}s)"
+                    )
+                tdata["score"] = 0.0
+                tdata["alerted"] = False
+                # 更新状态但不继续判定 sleeping
+                tdata["last_masks"] = {
+                    "person": person_box,
+                    "head": matched_head,
+                    "hands": matched_hands,
+                    "face": matched_face,
+                }
+                tdata["last_box"] = person_box.box
+                tdata["last_seen"] = now
+                tdata["last_process_time"] = now
+                continue
 
             # 判定是否静止
             is_still = self._detect_stillness(
