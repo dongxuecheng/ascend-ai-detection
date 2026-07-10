@@ -242,6 +242,14 @@ AIDetection/
   3. 检查手与手机是否存在明显重叠
   4. 返回与之相交的手机 Box 作为违规目标
 
+- **`sleep_duty.py`**（专门用于算法码 32）：
+  1. 过滤 SAM3 返回的 `person`、`head`、`hand`（需开启 `return_mask`）。
+  2. 使用 IoU 为每个 person 维护独立 ID 的静止积分。
+  3. 对比相邻帧中 person / head / hand 的 mask 重叠度判定是否静止。
+  4. 静止时长超过阈值后，裁剪人员区域并调用 VLM 二次确认。
+  5. VLM 确认睡觉则返回 label 为 `sleeping` 的 Box。
+  6. 需要在 `thread_local_detectors` 中配置为线程隔离。
+
 - **`move_phone.py`**（专门用于算法码 57）：
   1. 基于 Triton/YOLO 返回的 `person` 框，使用 ByteTrack/OCSort 跟踪人员。
   2. 缓存每个 track 最近数秒的帧和 bbox。

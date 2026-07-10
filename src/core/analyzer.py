@@ -17,6 +17,7 @@ from analyze.vest import VestDetector
 from analyze.safety import SafetyDetector
 from analyze.single import SingleDetector
 from analyze.smoke import SmokingDetector
+from analyze.sleep_duty import SleepDutyDetector
 from analyze.belt_deviation import BeltDeviationDetector
 from analyze.car import CarDetector
 from analyze.extinguisher import ExtinguisherDetector
@@ -41,6 +42,7 @@ _DETECTOR_CLASSES = {
     "SafetyDetector": SafetyDetector,
     "SingleDetector": SingleDetector,
     "SmokingDetector": SmokingDetector,
+    "SleepDutyDetector": SleepDutyDetector,
     "CarDetector": CarDetector,
     "BeltDeviationDetector": BeltDeviationDetector,
     "ExtinguisherDetector": ExtinguisherDetector,

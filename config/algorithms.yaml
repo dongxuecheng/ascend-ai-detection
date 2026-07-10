@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['0', '8', '10', '14', '33', '34', '38', '49', '50', '52', '53', '56', '57', '59']
+supported_codes: ['0', '8', '10', '14', '32', '33', '34', '38', '49', '50', '52', '53', '56', '57', '59']
 
 # 可用的 GPU 编码（GPU ID）列表。
 # StreamWorker 创建时会按轮询方式依次使用列表中的 GPU，实现多路流的负载均衡。
@@ -68,8 +68,8 @@ sam3_prompts:
   prompts: [fire, flame]
   return_mask: false
 - code: '32'
-  prompts: [person, head]
-  return_mask: false
+  prompts: [person, head, hand]
+  return_mask: true
 - code: '33'
   prompts: [conveyor belt]
   return_mask: true
@@ -167,6 +167,7 @@ algorithm_detectors:
 - {code: '52', detectors: [CarDetector]}
 - {code: '53', detectors: [ExtinguisherDetector]}
 - {code: '38', detectors: [DepartureDetector]}
+- {code: '32', detectors: [SleepDutyDetector]}
 - {code: '56', detectors: [PlayPhoneDetector]}
 - {code: '57', detectors: [MoveUsePhoneDetector]}
 - {code: '49', detectors: [CoalDetector]}
@@ -199,8 +200,9 @@ algorithm_intervals:
 - {code: '52', interval: 5.0}
 - {code: '53', interval: 5.0}
 - {code: '38', interval: 5.0}
+- {code: '32', interval: 5.0}
 - {code: '56', interval: 5.0}
-- {code: '57', interval: 0.1}
+- {code: '57', interval: 0.2}
 - {code: '49', interval: 600.0}
 - {code: '50', interval: 30.0}
 - {code: '58', interval: 5.0}
@@ -224,6 +226,7 @@ alert_dedup:
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '10', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
+- {code: '32', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
 - {code: '33', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '34', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
@@ -236,4 +239,4 @@ alert_dedup:
 
 # 需要线程隔离的检测器类名列表（如 ByteTrack 等带帧间跟踪状态的检测器）
 # 这些检测器在每个 StreamWorker 线程中拥有独立实例，避免多路视频状态互相干扰
-thread_local_detectors: [MoveUsePhoneDetector]
+thread_local_detectors: [MoveUsePhoneDetector, SleepDutyDetector]
