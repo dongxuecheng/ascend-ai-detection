@@ -1,0 +1,4 @@
+# 空 Compose 占位文件
+# 用于 docker-compose.yml 的 include 默认值，避免未配置外部服务时构建失败。
+# 如需启用 grpc_rtsp / triton 服务，请在 .env 中设置对应 COMPOSE 文件路径。
+services: {}

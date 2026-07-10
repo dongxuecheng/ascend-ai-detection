@@ -86,15 +86,25 @@ class StreamWorker(threading.Thread):
 
         # gRPC 服务端地址与启动参数（用于故障恢复时重建流）
         self._server_address = getattr(config, "STREAM_SERVER_ADDRESS", "192.168.100.74:50051")
+
+        # 根据该流关联的任务算法码，判断是否需要拉取全部帧
+        # 只要任一任务属于 full_frame_algorithms，就不能只拉关键帧
+        full_frame_codes = set(getattr(config, "FULL_FRAME_ALGORITHMS", []))
+        need_full_frame = any(
+            str(getattr(task, "algorithmCode", "")) in full_frame_codes
+            for task in tasks
+        )
+        if need_full_frame:
+            logger.info(f"[StreamWorker] 流 {rtsp_url} 关联了全帧算法，only_key_frames 设为 False")
+
         self._stream_start_params = {
             "heartbeat_timeout_ms": 1000000,
             # "decode_interval_ms": 70,
             "use_shared_mem": True,
-            "only_key_frames": True,
+            "only_key_frames": not need_full_frame,
             "decoder_type": DECODER_CPU_FFMPEG,
-            # "only_key_frames": False,
             # "decoder_type": DECODER_GPU_NVCUVID,
-            "gpu_id": self.gpu_code,
+            # "gpu_id": self.gpu_code,
         }
 
         # 读帧故障恢复状态
@@ -140,6 +150,22 @@ class StreamWorker(threading.Thread):
 
             self.tasks = tasks
             self.task_last_run = new_last_run
+
+            # 重新计算 only_key_frames 需求：只要关联了任一全帧算法，就必须拉全部帧
+            full_frame_codes = set(getattr(config, "FULL_FRAME_ALGORITHMS", []))
+            need_full_frame = any(
+                str(getattr(task, "algorithmCode", "")) in full_frame_codes
+                for task in tasks
+            )
+            new_only_key_frames = not need_full_frame
+            old_only_key_frames = self._stream_start_params.get("only_key_frames", True)
+            if new_only_key_frames != old_only_key_frames:
+                self._stream_start_params["only_key_frames"] = new_only_key_frames
+                logger.info(
+                    f"StreamWorker 任务列表更新导致 only_key_frames 变更: "
+                    f"{self.rtsp_url} {old_only_key_frames} -> {new_only_key_frames}，"
+                    f"下次流重建时生效"
+                )
 
             logger.info(f"StreamWorker 任务列表更新: {self.rtsp_url}, "
                         f"新增={len(new_ids - old_ids)}, 移除={len(old_ids - new_ids)}")
@@ -612,7 +638,7 @@ class StreamWorker(threading.Thread):
                             fences = self._get_fences_for_task(task)
                             image_width = frame.shape[1]
                             image_height = frame.shape[0]
-                            violations = analyze_for_task(task_boxes, task, fences=fences, image_width=image_width, image_height=image_height)
+                            violations = analyze_for_task(task_boxes, task, fences=fences, image_width=image_width, image_height=image_height, frame=frame)
                             if len(task_boxes) > 0 and len(violations) > 0:
                                 logger.info(f"分析完成 task={task.id}, 规则引擎违规数={len(violations)}")
                             if len(violations) == 0:

@@ -83,6 +83,10 @@ AIDetection/
 │   │   ├── triton_client_fast.py   # YOLO Triton 高性能客户端
 │   │   ├── sam3.py             # SAM3 推理封装
 │   │   └── ...                 # 其他推理客户端
+│   ├── obj_track/              # 多目标跟踪器（ByteTrack / OCSort）
+│   │   ├── trackers.py         # 跟踪器统一接口与工厂函数
+│   │   ├── byte_track/         # ByteTrack 实现
+│   │   └── oc_sort/            # OCSort 实现
 │   ├── llm/
 │   │   └── llm.py              # 大模型视觉复核客户端
 │   └── utils/
@@ -140,9 +144,11 @@ AIDetection/
 - `YOLO_MODEL_CONFIGS`：YOLO 模型配置，按 `name` 索引，支持 `label_map_file` 指向 `.names` 文件
 - `ALGM_PRE_YOLO_MODEL_DETECT_CLASSES`：每个算法码在各 YOLO 模型上要预检的类别
 - `ALGORITHM_DETECTORS`：算法码到检测器类名的映射
+- `THREAD_LOCAL_DETECTOR_CLASSES`：需要线程隔离的检测器类名列表（如 ByteTrack 等带帧间跟踪状态的检测器），每个 `StreamWorker` 线程拥有独立实例，避免多路视频状态互相干扰
 - `ALERT_DEDUP_CONFIG`：各算法码的报警去重参数
 - `ALGORITHM_INTERVALS`：各算法码的检测间隔（秒），`StreamWorker` 用其控制任务分析频率
 - `DEFAULT_ALGORITHM_INTERVAL`：未配置间隔的算法码默认检测间隔（秒），默认 1.0
+- `FULL_FRAME_ALGORITHMS`：必须拉取全部帧（不能仅拉关键帧）的算法码列表；一个视频流上只要关联了任一全帧算法，`StreamWorker` 就会以 `only_key_frames=False` 打开流
 - `ALGORITHM_VL_CONFIG`：各算法码的 VL 大模型二次复核配置，包含 `enabled` 和 `module` 两个字段，默认不启用
 - `REQUEST_INTERVAL`：任务同步间隔（秒），默认 10
 
@@ -189,7 +195,8 @@ AIDetection/
 
 ### 4. 分析层 (`analyze/`)
 
-所有分析模块接收 `Box` 对象列表（来自 SAM3 推理结果），返回违规目标列表。
+所有分析模块接收 `Box` 对象列表（来自 SAM3/YOLO 推理结果），返回违规目标列表。
+部分检测器（如 `MoveUsePhoneDetector`）还会从 `StreamWorker` 接收当前帧图像，用于缓存历史帧。
 
 - **`helmet.py`**：
   1. 筛选 `person`（面积 ≥ 1000，分数 ≥ 0.5）
@@ -234,6 +241,14 @@ AIDetection/
   2. 过滤掉孤立的手和手机（不与 person 相交）
   3. 检查手与手机是否存在明显重叠
   4. 返回与之相交的手机 Box 作为违规目标
+
+- **`move_phone.py`**（专门用于算法码 57）：
+  1. 基于 Triton/YOLO 返回的 `person` 框，使用 ByteTrack/OCSort 跟踪人员。
+  2. 缓存每个 track 最近数秒的帧和 bbox。
+  3. 当人员持续移动超过阈值时，从历史缓存中抽取中间三帧。
+  4. 对每帧裁剪出人员区域，调用 SAM3 检测 `phone` / `person` / `hand`。
+  5. 若手机与手相交且与人员上半身相交，返回 label 为 `moving-use-phone` 的 Box。
+  6. 需要在 `thread_local_detectors` 中配置为线程隔离。
 
 - **`height_work.py`**（专门用于算法码 58）：
   1. 过滤 `person-on-ladder` / `person-on-scaffolding`、梯子/脚手架、安全带
@@ -338,8 +353,62 @@ AIDetection/
 项目没有依赖清单文件，需手动安装以下包：
 
 ```bash
-pip install pydantic python-dotenv pyyaml requests opencv-python numpy shapely grpcio protobuf PyTurboJPEG
+pip install pydantic python-dotenv pyyaml requests opencv-python numpy shapely grpcio protobuf PyTurboJPEG posix_ipc openai scipy filterpy lap cython-bbox
 ```
+
+> `scipy`、`filterpy`、`lap`、`cython-bbox` 是 `src/obj_track/` 下 ByteTrack / OCSort 跟踪器的依赖。
+
+### Docker 构建
+
+项目提供 `Dockerfile`，已包含上述依赖及编译工具。推荐只构建 AIDetection 服务：
+
+```bash
+# 仅构建 AIDetection 镜像（不触发 include 中其他服务的构建）
+docker compose build aidetection
+
+# 或直接用 Docker 构建
+docker build -t ai-detection .
+```
+
+> `docker-compose.yml` 默认通过 `include` 引入外部服务（grpc_rtsp、triton）。
+> 若这些服务未部署，默认会回退到项目内的 `docker-compose.empty.yml`，不会导致构建失败。
+> 如需禁用 include，可将 `.env` 中的 `GRPC_RTSP_COMPOSE` / `TRITON_COMPOSE` 指向空 compose 文件，或注释对应行。
+>
+> 为避免 include 禁用时 `depends_on` 引用未定义服务，`docker-compose.yml` 中已移除 `depends_on`。
+> 启动容器前请确保 grpc_rtsp / triton 服务已运行（若通过 include 引入，则 `docker compose up -d` 会自动拉起）。
+
+#### 基础镜像拉取失败
+
+若构建时出现 `failed to resolve source metadata for docker.io/library/python:3.13-slim-bookworm` 等 Docker Hub 超时错误，说明当前环境访问 Docker Hub 受限。可选方案：
+
+1. **配置 Docker 镜像加速**（推荐，全局生效）：
+   ```bash
+   sudo tee /etc/docker/daemon.json <<'EOF'
+   {
+     "registry-mirrors": [
+       "https://<你的阿里云镜像加速ID>.mirror.aliyuncs.com",
+       "https://docker.mirrors.ustc.edu.cn",
+       "https://hub-mirror.c.163.com"
+     ]
+   }
+   EOF
+   sudo systemctl restart docker
+   ```
+   阿里云镜像加速 ID 需在[阿里云容器镜像服务](https://cr.console.aliyun.com/)控制台获取。
+
+2. **通过 `.env` 指定镜像仓库基础镜像**（无需改 Dockerfile）：
+   ```env
+   AIDETECTION_BASE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/python:3.13-slim-bookworm
+   ```
+   然后执行：
+   ```bash
+   docker compose build aidetection
+   ```
+
+3. **命令行直接覆盖**：
+   ```bash
+   docker build --build-arg BASE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/python:3.13-slim-bookworm -t ai-detection .
+   ```
 
 ### 运行入口
 

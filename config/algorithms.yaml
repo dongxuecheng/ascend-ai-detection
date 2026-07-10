@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['0', '8', '10', '14', '33', '34', '38', '49', '50', '52', '53', '56', '59']
+supported_codes: ['0', '8', '10', '14', '33', '34', '38', '49', '50', '52', '53', '56', '57', '59']
 
 # 可用的 GPU 编码（GPU ID）列表。
 # StreamWorker 创建时会按轮询方式依次使用列表中的 GPU，实现多路流的负载均衡。
@@ -106,9 +106,10 @@ sam3_prompts:
 - code: '56'
   prompts: [person, hand, mobile phone, phone]
   return_mask: false
-- code: '57'
-  prompts: [person, hand, mobile phone, phone]
-  return_mask: false
+# 移动中使用手机：不配置 sam3_prompts，由 MoveUsePhoneDetector 在确认移动后自行对历史帧裁剪调用 SAM3
+# - code: '57'
+#   prompts: [hand, mobile phone, phone]
+#   return_mask: false
 - code: '58'
   prompts: [person-on-ladder, person-on-scaffolding, ladder, scaffolding, safety harness,
     harness]
@@ -139,6 +140,7 @@ fence_algorithms:
 use_yolo_boxes:
 - {code: '200'}
 - {code: '50'}
+- {code: '57'}
 
 # YOLO 预检测配置：模型详细参数已迁移到 config/models.yaml
 yolo_pre_detect:
@@ -147,6 +149,7 @@ yolo_pre_detect:
 - {code: '14', yolo11_plan: [person]}
 - {code: '34', yolo11_plan: [person]}
 - {code: '38', yolo11_plan: [person]}
+- {code: '57', yolo11_plan: [person]}
 - {code: '52', yolo11_plan: [person]}
 - {code: '53', yolo11_plan: [person]}
 - {code: '56', yolo11_plan: [person]}
@@ -165,6 +168,7 @@ algorithm_detectors:
 - {code: '53', detectors: [ExtinguisherDetector]}
 - {code: '38', detectors: [DepartureDetector]}
 - {code: '56', detectors: [PlayPhoneDetector]}
+- {code: '57', detectors: [MoveUsePhoneDetector]}
 - {code: '49', detectors: [CoalDetector]}
 - {code: '50', detectors: [CoalForeignObjectDetector]}
 - {code: '59', detectors: [EmptyTruckDetector]}
@@ -196,6 +200,7 @@ algorithm_intervals:
 - {code: '53', interval: 5.0}
 - {code: '38', interval: 5.0}
 - {code: '56', interval: 5.0}
+- {code: '57', interval: 0.1}
 - {code: '49', interval: 600.0}
 - {code: '50', interval: 30.0}
 - {code: '58', interval: 5.0}
@@ -204,6 +209,11 @@ algorithm_intervals:
 - {code: '201', interval: 5.0}
 - {code: '204', interval: 5.0}
 - {code: '205', interval: 5.0}
+
+# 算法码 -> 是否必须拉取全部帧（不能仅拉关键帧）。
+# 一个视频流上只要关联了任一 full_frame 算法，StreamWorker 就会以 only_key_frames=False 打开流。
+full_frame_algorithms:
+- {code: '57'}
 
 # 算法码 -> 需要调用的分类器名称列表（分类模型定义见 config/models.yaml）
 algorithm_classifiers:
@@ -223,3 +233,7 @@ alert_dedup:
 - {code: '50', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '59', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '58', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+
+# 需要线程隔离的检测器类名列表（如 ByteTrack 等带帧间跟踪状态的检测器）
+# 这些检测器在每个 StreamWorker 线程中拥有独立实例，避免多路视频状态互相干扰
+thread_local_detectors: [MoveUsePhoneDetector]

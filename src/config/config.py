@@ -237,6 +237,15 @@ class BaseConfig(BaseModel):
     DEFAULT_ALGORITHM_INTERVAL: float = _DEFAULT_ALGORITHM_INTERVAL
     ALGORITHM_INTERVALS: Dict[str, float] = _ALGORITHM_INTERVALS
 
+    # 哪些算法码必须拉取全部帧（不能仅拉关键帧）
+    # 一个视频流上只要关联了任一 full_frame 算法，StreamWorker 就会以 only_key_frames=False 打开流
+    _full_frame_raw: List[dict] = _ALGO_CONFIG.get("full_frame_algorithms", [])
+    FULL_FRAME_ALGORITHMS: List[str] = [
+        str(_item.get("code"))
+        for _item in _full_frame_raw
+        if isinstance(_item, dict) and "code" in _item
+    ]
+
     # 算法代码 -> VL 大模型二次复核配置
     # 未在 algorithms.yaml 中配置的算法码，默认不启用
     # 每项为 {enabled: bool, module: str}
@@ -258,6 +267,14 @@ class BaseConfig(BaseModel):
         for _item in _classifier_raw
         if isinstance(_item, dict) and "code" in _item
     }
+
+    # 需要线程隔离的检测器类名列表（如 ByteTrack 等带跟踪状态的检测器）
+    # 这些检测器在每个 StreamWorker 线程中拥有独立实例，避免多路视频状态互相干扰
+    THREAD_LOCAL_DETECTOR_CLASSES: List[str] = [
+        str(_name)
+        for _name in _ALGO_CONFIG.get("thread_local_detectors", [])
+        if isinstance(_name, str)
+    ]
 
     # 算法代码 -> 报警去重配置
     _dedup_raw: List[dict] = _ALGO_CONFIG.get("alert_dedup", [])

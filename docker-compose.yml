@@ -18,16 +18,20 @@
 #   - 使用 Docker 默认 bridge 网络，内部服务（grpc_rtsp、triton）通过服务名访问
 
 # 引入外部依赖服务的 Compose 文件路径，从 .env 读取。
-# 若不需要引入某个服务，可在 .env 中将其路径指向一个空 compose 文件，或注释掉对应行。
+# 默认指向项目内的空占位文件，避免未安装外部服务时 docker compose build 失败。
+# 如需启用真实服务，请在 .env 中设置 GRPC_RTSP_COMPOSE / TRITON_COMPOSE 为实际路径。
 include:
-  - ${GRPC_RTSP_COMPOSE:-../grpc_rtsp/docker-compose.yml}
-  - ${TRITON_COMPOSE:-../triton/docker-compose.yml}
+  - ${GRPC_RTSP_COMPOSE:-./docker-compose.empty.yml}
+  - ${TRITON_COMPOSE:-./docker-compose.empty.yml}
 
 services:
   aidetection:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 可通过 .env 中的 AIDETECTION_BASE_IMAGE 覆盖基础镜像，用于 Docker Hub 访问受限的环境
+        - BASE_IMAGE=${AIDETECTION_BASE_IMAGE:-python:3.13-slim-bookworm}
     image: aidetection:latest
     container_name: aidetection
     # 使用 Docker 默认 bridge 网络，与 include 引入的 grpc_rtsp / triton 服务通过服务名通信。
@@ -38,12 +42,6 @@ services:
     # RTSP 共享内存估算：每路流 ≈ 宽*高*3*8(slot) + 对齐开销；8 路 1080p 约 400MB，4K 约 1.6GB
     # 建议生产环境至少 32G，并同时调大宿主机 /dev/shm
     restart: unless-stopped
-    # AIDetection 依赖 grpc_rtsp 和 triton 服务，确保先启动依赖。
-    # 注意：depends_on 只控制启动顺序，不等待服务完全就绪；如需严格等待健康检查，
-    # 请在 grpc_rtsp / triton 的 Compose 文件中配置 healthcheck 并使用 condition: service_healthy。
-    depends_on:
-      - grpc_rtsp
-      - triton-server
     # 所有应用配置统一从项目根目录 .env 文件加载并注入容器
     # 这样 docker-compose.yml 本身不需要维护具体配置值，修改 .env 即可
     env_file:
