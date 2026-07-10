@@ -62,7 +62,7 @@ sam3_prompts:
     red hat, red helmet, red hard hat]
   return_mask: false
 - code: '14'
-  prompts: [cigarette, person, hand, head]
+  prompts: [cigarette, person, face]
   return_mask: false
 - code: '16'
   prompts: [fire, flame]
