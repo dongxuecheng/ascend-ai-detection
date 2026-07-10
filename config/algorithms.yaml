@@ -184,6 +184,7 @@ algorithm_detectors:
 # module: 对应的 VL prompt 模块名（llm/prompts/ 下的文件名，不含 .py）
 # 未配置的算法码默认不启用 VL 复核
 algorithm_vl_config:
+- {code: '32', enabled: true, module: sleep_duty}
 - {code: '50', enabled: true, module: coal_foreign_object}
 - {code: '58', enabled: true, module: height_work}
 - {code: '205', enabled: true, module: safety}
