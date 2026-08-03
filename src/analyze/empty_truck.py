@@ -65,8 +65,16 @@ class EmptyTruckDetector:
         result = []
         used_coals = set()
 
+        image_area = image_width * image_height
+
         # 遍历每个车厢和每个煤块的组合
         for truck in truck_beds:
+            truck_area = (truck.box[2] - truck.box[0]) * (truck.box[3] - truck.box[1])
+            if truck_area / image_area < 0.8:
+                logger.warning(
+                    f"[device={device_id}] 车厢面积过小，可能为误检，跳过: {truck.box}"
+                )
+                continue
             t_box = truck.box
 
             for coal in coals:
@@ -95,5 +103,7 @@ class EmptyTruckDetector:
                     )
                     result.append(violation)
                     used_coals.add(cid)
-
+        # 返回最大的那一块
+        result = sorted(result, key=lambda x: (x.box[2] - x.box[0]) * (x.box[3] - x.box[1]), reverse=True)
+        result = result[:1]  # 只保留最大的那一块
         return result

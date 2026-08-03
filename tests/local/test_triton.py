@@ -73,21 +73,21 @@ def main():
     parser = argparse.ArgumentParser(description="Triton YOLO 本地测试")
     parser.add_argument("-i", "--image", required=True, help="输入图片路径")
     parser.add_argument("--url", default="localhost:38000", help="Triton HTTP 地址")
-    parser.add_argument("--model", default="yolo11_plan", help="模型名")
+    parser.add_argument("--model", default="yolo26_ensemble", help="模型名（Triton ensemble）")
     parser.add_argument("--input-size", type=int, default=640, help="输入尺寸")
     parser.add_argument("--conf", type=float, default=0.5, help="置信度阈值")
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU 阈值")
     parser.add_argument(
         "--output-format", default="yolo_v8_v11",
         choices=["yolo_v8_v11", "yolo_v12_end2end"],
-        help="模型输出格式"
+        help="模型输出格式（已集成到 Triton ensemble，此参数仅保留兼容）"
     )
     parser.add_argument("--classes", type=str, default=None, help="只检测指定类别 ID，逗号分隔，如 0,1,2")
     parser.add_argument("-n", "--iterations", type=int, default=1, help="推理轮数（用于压测）")
     parser.add_argument("--no-shm", action="store_true", help="关闭共享内存，使用 HTTP numpy 传输")
     parser.add_argument("--save", default=None, help="保存绘制结果图的路径")
-    parser.add_argument("--input-name", default="images", help="输入 tensor 名")
-    parser.add_argument("--output-name", default="output0", help="输出 tensor 名")
+    parser.add_argument("--input-name", default="raw_image", help="输入 tensor 名（ensemble 固定为 raw_image）")
+    parser.add_argument("--output-name", default="detection_boxes", help="输出 tensor 名（ensemble 固定，此参数仅保留兼容）")
     args = parser.parse_args()
 
     if not os.path.isfile(args.image):

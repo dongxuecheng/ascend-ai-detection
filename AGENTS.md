@@ -80,7 +80,7 @@ AIDetection/
 │   │   ├── single.py           # 单人作业检测逻辑
 │   │   └── smoke.py            # 吸烟检测逻辑
 │   ├── detect/
-│   │   ├── triton_client_fast.py   # YOLO Triton 高性能客户端
+│   │   ├── triton_client_fast.py   # YOLO Triton ensemble 客户端（基于 triton_client 封装）
 │   │   ├── sam3.py             # SAM3 推理封装
 │   │   └── ...                 # 其他推理客户端
 │   ├── obj_track/              # 多目标跟踪器（ByteTrack / OCSort）

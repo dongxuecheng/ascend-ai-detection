@@ -27,7 +27,7 @@ class BeltDeviationDetector:
         self,
         belt_min_score: float = 0.65,
         outside_ratio_thresh: float = 0.1,
-        min_contour_area: float = 10.0,
+        min_contour_area: float = 50.0,
     ):
         """
         :param belt_min_score: conveyor belt 最低置信度
@@ -83,6 +83,35 @@ class BeltDeviationDetector:
         belt_poly = belt_poly.convex_hull
 
         return belt_poly, float(belt_poly.area)
+    
+    @staticmethod
+    def _draw_polygons(
+        image: np.ndarray,
+        fence_polys: list[Polygon],
+        belt_poly: Polygon,
+        outside_ratio: float,
+        is_violation: bool,
+        color_fence=(0, 255, 0),
+        color_belt=(255, 0, 0),
+        color_violation=(0, 0, 255),
+    ):
+        """在图像上绘制围栏和皮带多边形，并显示越界比例。"""
+        img_copy = image.copy()
+        # 绘制围栏（绿色）
+        for poly in fence_polys:
+            pts = np.array(poly.exterior.coords, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(img_copy, [pts], isClosed=True, color=color_fence, thickness=2)
+
+        # 绘制皮带多边形（蓝色或红色）
+        if belt_poly is not None:
+            pts = np.array(belt_poly.exterior.coords, dtype=np.int32).reshape((-1, 1, 2))
+            color = color_violation if is_violation else color_belt
+            cv2.fillPoly(img_copy, [pts], color=color, lineType=cv2.LINE_AA)
+            cv2.polylines(img_copy, [pts], isClosed=True, color=(255,255,255), thickness=1)
+            # 显示越界比例
+            text = f"outside_ratio: {outside_ratio:.2%}"
+            cv2.putText(img_copy, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        return img_copy
 
     def detect(
         self,
@@ -91,6 +120,7 @@ class BeltDeviationDetector:
         device_id: str = "",
         image_width: int = 0,
         image_height: int = 0,
+        frame: np.ndarray = None, 
     ) -> list[Box]:
         """
         皮带跑偏检测入口。
@@ -136,6 +166,7 @@ class BeltDeviationDetector:
         used_ids = set()
 
         for belt in belt_boxes:
+            img_copy = frame.copy()
             bid = id(belt)
             if bid in used_ids:
                 continue
@@ -143,7 +174,13 @@ class BeltDeviationDetector:
             belt_poly, belt_area = self._mask_to_polygon(belt, image_width, image_height)
             if belt_poly is None or belt_area <= 0:
                 continue
-
+            
+            # pts = np.array(belt_poly.exterior.coords, dtype=np.int32).reshape((-1, 1, 2))
+            # color = (0, 0, 255)
+            # cv2.fillPoly(img_copy, [pts], color=color, lineType=cv2.LINE_AA)
+            # cv2.polylines(img_copy, [pts], isClosed=True, color=(255,255,255), thickness=1)
+            # cv2.imwrite(f"{index}.jpg",img_copy)
+            # index += 1
             for f_idx, fence_poly in enumerate(fence_polygons):
                 if not belt_poly.intersects(fence_poly):
                     continue

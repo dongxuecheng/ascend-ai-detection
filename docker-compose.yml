@@ -58,6 +58,10 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     working_dir: /app
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     command: ["python", "main.py"]
     logging:
       driver: "json-file"

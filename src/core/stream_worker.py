@@ -51,13 +51,14 @@ def _get_yolo_client(model_name: str) -> Optional[YOLOTritonFast]:
                 url=config.TRITON_YOLO_URL,
                 model_name=model_name,
                 label_map=model_cfg.get("label_map"),
-                input_name=model_cfg.get("input_name", "images"),
+                input_name=model_cfg.get("input_name", "raw_image"),
                 output_name=model_cfg.get("output_name", "output0"),
                 input_size=model_cfg.get("input_size", 640),
                 output_format=model_cfg.get("output_format", "yolo_v8_v11"),
                 conf_thresh=model_cfg.get("conf_thresh", 0.5),
                 iou_thresh=model_cfg.get("iou_thresh", 0.45),
-                warmup=True
+                protocol="shm",
+                warmup=True,
             )
             _yolo_local.clients[model_name] = client
             logger.info(f"YOLO 客户端创建成功: {model_name} @ {config.TRITON_YOLO_URL} "
@@ -575,7 +576,7 @@ class StreamWorker(threading.Thread):
                     logger.info(f"SAM3 请求 | URL={url} | Prompts: {merged_prompts}, return_mask={return_mask}")
                     boxes = call_sam3(
                         frame, merged_prompts,
-                        confidence_threshold=0.5,
+                        confidence_threshold=0.4,
                         return_mask=return_mask,
                         url=url,
                     )

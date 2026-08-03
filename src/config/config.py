@@ -128,7 +128,12 @@ class BaseConfig(BaseModel):
     VIOLATION_IMAGE_SAVE_DIR: str = os.getenv("VIOLATION_IMAGE_SAVE_DIR", "/mnt/yolo/images")
 
     # ---- Triton YOLO 推理服务 ----
+    # HTTP 端口（共享内存/HTTP 调用时使用）
     TRITON_YOLO_URL: str = os.getenv("TRITON_YOLO_URL", "192.168.100.74:38000")
+    # gRPC 端口（推荐，避免 gevent/libev 文件描述符开销）
+    TRITON_YOLO_GRPC_URL: str = os.getenv("TRITON_YOLO_GRPC_URL", "192.168.100.74:38001")
+    # 分类模型默认共用同一 Triton 服务的 gRPC 端口
+    TRITON_CLASSIFIER_GRPC_URL: str = os.getenv("TRITON_CLASSIFIER_GRPC_URL", "192.168.100.74:38001")
 
     # ---- VL 大模型配置 ----
     VL_ENABLED: bool = os.getenv("VL_ENABLED", "true").lower() in ("1", "true", "yes", "on")

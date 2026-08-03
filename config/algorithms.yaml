@@ -116,7 +116,7 @@ sam3_prompts:
   return_mask: true
 - code: '59'
   prompts: [truck bed, dark coal residue]
-  return_mask: false
+  return_mask: true
 - code: '200'
   prompts: [person, hand, glove, face shield, face]
   return_mask: false
@@ -144,17 +144,17 @@ use_yolo_boxes:
 
 # YOLO 预检测配置：模型详细参数已迁移到 config/models.yaml
 yolo_pre_detect:
-- {code: '0', yolo11_plan: [person]}
-- {code: '8', yolo11_plan: [person]}
-- {code: '14', yolo11_plan: [person]}
-- {code: '34', yolo11_plan: [person]}
-- {code: '38', yolo11_plan: [person]}
-- {code: '57', yolo11_plan: [person]}
-- {code: '52', yolo11_plan: [person]}
-- {code: '53', yolo11_plan: [person]}
-- {code: '56', yolo11_plan: [person]}
-- {code: '58', yolo11_plan: [person]}
-- {code: '50', yolov5_foreign_objects: [dakuai]}
+- {code: '0', yolo26_ensemble: [person]}
+- {code: '8', yolo26_ensemble: [person]}
+- {code: '14', yolo26_ensemble: [person]}
+- {code: '34', yolo26_ensemble: [person]}
+- {code: '38', yolo26_ensemble: [person]}
+- {code: '57', yolo26_ensemble: [person]}
+- {code: '52', yolo26_ensemble: [person]}
+- {code: '53', yolo26_ensemble: [person]}
+- {code: '56', yolo26_ensemble: [person]}
+- {code: '58', yolo26_ensemble: [person]}
+- {code: '50', yolov5_ensemble: [dakuai]}
 
 
 algorithm_detectors:
@@ -185,33 +185,33 @@ algorithm_detectors:
 # 未配置的算法码默认不启用 VL 复核
 algorithm_vl_config:
 - {code: '32', enabled: true, module: sleep_duty}
-- {code: '50', enabled: true, module: coal_foreign_object}
+# - {code: '50', enabled: true, module: coal_foreign_object}
 - {code: '58', enabled: true, module: height_work}
 - {code: '205', enabled: true, module: safety}
 
 # 算法码 -> 检测间隔（秒），StreamWorker 据此判断任务是否进入 ready 状态
 # 未配置的算法码使用 DEFAULT_ALGORITHM_INTERVAL（默认 1.0 秒）
 algorithm_intervals:
-- {code: '0', interval: 5.0}
-- {code: '8', interval: 5.0}
-- {code: '10', interval: 5.0}
-- {code: '14', interval: 5.0}
-- {code: '33', interval: 5.0}
+- {code: '0', interval: 10.0}
+- {code: '8', interval: 10.0}
+- {code: '10', interval: 10.0}
+- {code: '14', interval: 10.0}
+- {code: '33', interval: 10.0}
 - {code: '34', interval: 2.0}
-- {code: '52', interval: 5.0}
-- {code: '53', interval: 5.0}
-- {code: '38', interval: 5.0}
-- {code: '32', interval: 5.0}
-- {code: '56', interval: 5.0}
-- {code: '57', interval: 0.2}
+- {code: '52', interval: 10.0}
+- {code: '53', interval: 10.0}
+- {code: '38', interval: 10.0}
+- {code: '32', interval: 10.0}
+- {code: '56', interval: 10.0}
+- {code: '57', interval: 0.1}
 - {code: '49', interval: 600.0}
 - {code: '50', interval: 30.0}
-- {code: '58', interval: 5.0}
-- {code: '59', interval: 5.0}
-- {code: '200', interval: 5.0}
-- {code: '201', interval: 5.0}
-- {code: '204', interval: 5.0}
-- {code: '205', interval: 5.0}
+- {code: '58', interval: 10.0}
+- {code: '59', interval: 10.0}
+- {code: '200', interval: 10.0}
+- {code: '201', interval: 10.0}
+- {code: '204', interval: 10.0}
+- {code: '205', interval: 10.0}
 
 # 算法码 -> 是否必须拉取全部帧（不能仅拉关键帧）。
 # 一个视频流上只要关联了任一 full_frame 算法，StreamWorker 就会以 only_key_frames=False 打开流。
@@ -227,6 +227,7 @@ alert_dedup:
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '10', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
+- {code: '16', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5} # 加入灭火器到检测去重
 - {code: '32', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
 - {code: '33', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '34', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}

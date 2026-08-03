@@ -44,12 +44,13 @@ def _get_classifier_client(name: str) -> Optional[TritonClassificationClient]:
             client = TritonClassificationClient(
                 url=config.TRITON_YOLO_URL,
                 model_name=cfg.get("model_name", name),
-                input_name=cfg.get("input_name", "images"),
-                output_name=cfg.get("output_name", "output0"),
+                input_name=cfg.get("input_name", "raw_image"),
+                output_name=cfg.get("output_name", "output"),
                 input_size=cfg.get("input_size", 224),
                 labels=cfg.get("labels"),
                 mean=cfg.get("mean"),
                 std=cfg.get("std"),
+                protocol="shm",
             )
             _classifier_clients[name] = client
             logger.info(f"分类器客户端创建成功: {name}")

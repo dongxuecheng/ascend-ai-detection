@@ -190,8 +190,10 @@ def detect_sam3_only(frame: np.ndarray, algo_code: str) -> List[Box]:
     """直接调用 SAM3 推理"""
     from detect.sam3 import call_sam3
     prompts = config.ALGORITHM_SAM3_PROMPT.get(str(algo_code), ["person"])
+    print(prompts)
     return_mask = config.ALGORITHM_SAM3_RETURN_MASK.get(str(algo_code), False)
-    return call_sam3(frame, prompts, return_mask=return_mask)
+    sam3_url = config.ALGORITHM_SAM3_URL.get(str(algo_code), "http://192.168.100.75:18002/predict")
+    return call_sam3(frame, prompts, return_mask=return_mask, url=sam3_url)
 
 
 def detect_yolo_then_sam3(frame: np.ndarray, algo_code: str) -> List[Box]:
@@ -250,7 +252,7 @@ def process_image(image_path: str, task, output_dir: str, mode: str):
     image_height = frame.shape[0]
     violations = analyze_for_task(
         all_boxes, task, fences=fences,
-        image_width=image_width, image_height=image_height
+        image_width=image_width, image_height=image_height, frame=frame
     )
     t2_end = time.time()
     logger.info(f"分析完成 | 耗时={t2_end-t2_start:.3f}s | 违规数={len(violations)}")

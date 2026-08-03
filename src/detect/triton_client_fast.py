@@ -1,158 +1,28 @@
 """
-YOLO Triton 高性能推理客户端（仿射变换版）
+YOLO Triton 推理客户端（基于 triton_client 统一封装）
 
-支持 System Shared Memory 上传输入/下载输出：当 Python 客户端与 Triton Server 部署在同一台机器时，
-通过 POSIX 共享内存传输输入/输出 tensor，避免在 HTTP body 中重复拷贝大图像数据。
-如果共享内存初始化失败，会自动回退到普通的 HTTP numpy 传输。
+当前 Triton 服务已集成图像预处理与 YOLO 后处理，客户端只需：
+  1. 将原始 BGR 帧转成 RGB 后整体送入 Triton（输入名 raw_image）。
+  2. 解析返回的 num_dets / detection_boxes / detection_scores / detection_classes。
+  3. 使用 Triton 返回的 transform_metadata 仿射矩阵将检测框映射回原图坐标。
+
+底层通信统一使用 src/triton_client.TritonClient。为降低多线程/多模型场景下的
+连接与文件描述符开销，同一线程、同一 URL+协议 的 TritonClient 实例会被复用。
 """
 
-import os
 import sys
-import re
-import mmap
-import atexit
-import socket
 import threading
 import time
 from typing import List, Tuple, Optional, Dict
 
 import cv2
 import numpy as np
-import tritonclient.http as httpclient
 
-try:
-    import posix_ipc
-    _HAS_POSIX_IPC = True
-except ImportError:
-    _HAS_POSIX_IPC = False
-
+from triton_client import TritonClient, TritonClientError
 from utils.obj import Box
 from utils.logger import setup_logger
 
 logger = setup_logger("triton_client_fast")
-
-# 共享内存文件保留的最长时间（秒）：超过此时间且无法确认归属进程存活的文件会被清理
-_SHM_MAX_AGE_SEC = 600
-# 后台清理线程执行间隔（秒）
-_SHM_CLEANUP_INTERVAL_SEC = 300
-
-
-def _get_hostname_short() -> str:
-    """获取当前主机/容器标识（Docker 默认 hostname 即容器 ID 前 12 位）"""
-    hostname = socket.gethostname()
-    sanitized = re.sub(r"[^a-zA-Z0-9]", "", hostname).lower()
-    return sanitized[:12] if sanitized else "unknown"
-
-
-def _parse_shm_filename(name: str, prefix: str):
-    """
-    解析共享内存文件名，返回 (hostname, pid) 或 (None, None)。
-    支持新格式：aidet_model_input_hostname_pid_tid
-    兼容旧格式：aidet_model_input_pid_tid
-
-    对于不符合上述格式或 pid 非数字的遗留文件，返回 (None, None)，由调用方按
-    跨容器/旧格式策略兜底清理，避免因格式异常导致客户端创建失败。
-    """
-    rest = name[len(prefix):]
-    parts = rest.split("_")
-    try:
-        if len(parts) == 3:
-            return parts[0], int(parts[1])
-        elif len(parts) == 2:
-            return None, int(parts[0])
-    except ValueError:
-        pass
-    return None, None
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """检查当前 PID 命名空间中进程是否存活"""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
-    except OSError:
-        return False
-
-
-def _cleanup_all_aidet_shm(max_age_sec: int = _SHM_MAX_AGE_SEC):
-    """
-    清理 /dev/shm 下所有 aidet_* 共享内存文件。
-    策略：
-      - 同 hostname 且 PID 不存在的文件删除；
-      - 不同 hostname 或旧格式文件，按文件修改时间超过 max_age_sec 删除。
-    """
-    if not _HAS_POSIX_IPC:
-        return
-    shm_dir = "/dev/shm"
-    if not os.path.isdir(shm_dir):
-        return
-
-    my_hostname = _get_hostname_short()
-    now = time.time()
-    prefixes = ("aidet_",)
-    cleaned = 0
-
-    for name in os.listdir(shm_dir):
-        if not any(name.startswith(p) for p in prefixes):
-            continue
-        if "_input_" not in name and "_output_" not in name:
-            continue
-
-        # 定位前缀，例如 aidet_yolo11_plan_input_
-        for sep in ("_input_", "_output_"):
-            idx = name.find(sep)
-            if idx == -1:
-                continue
-            prefix = name[: idx + len(sep)]
-            file_hostname, pid = _parse_shm_filename(name, prefix)
-            break
-        else:
-            continue
-
-        should_delete = False
-        if file_hostname is None or file_hostname != my_hostname:
-            # 跨容器/旧格式：按文件年龄清理
-            try:
-                st = os.stat(os.path.join(shm_dir, name))
-                if now - st.st_mtime > max_age_sec:
-                    should_delete = True
-            except Exception:
-                continue
-        else:
-            # 同容器：按 PID 存活判断
-            if not _is_pid_alive(pid):
-                should_delete = True
-
-        if should_delete:
-            try:
-                posix_ipc.unlink_shared_memory(f"/{name}")
-                cleaned += 1
-                logger.info(f"清理遗留 Triton 共享内存: /dev/shm/{name}")
-            except posix_ipc.ExistentialError:
-                pass
-            except Exception as e:
-                logger.debug(f"清理遗留共享内存失败 {name}: {e}")
-
-    if cleaned > 0:
-        logger.info(f"共清理 {cleaned} 个遗留 Triton 共享内存文件")
-
-
-def _periodic_shm_cleanup():
-    """后台守护线程：定期扫描并清理遗留共享内存"""
-    while True:
-        time.sleep(_SHM_CLEANUP_INTERVAL_SEC)
-        try:
-            _cleanup_all_aidet_shm()
-        except Exception as e:
-            logger.debug(f"后台共享内存清理异常: {e}")
-
-
-# 模块加载时启动后台清理线程（仅当 posix_ipc 可用时）
-if _HAS_POSIX_IPC:
-    _shm_cleanup_thread = threading.Thread(target=_periodic_shm_cleanup, daemon=True)
-    _shm_cleanup_thread.start()
 
 
 _DEFAULT_COCO_LABEL_MAP = {
@@ -177,30 +47,51 @@ _DEFAULT_COCO_LABEL_MAP = {
     79: "toothbrush",
 }
 
-# Triton 数据类型 -> numpy 数据类型
-_TRITON_DTYPE_MAP = {
-    "FP32": np.float32,
-    "FP16": np.float16,
-    "FP64": np.float64,
-    "INT8": np.int8,
-    "INT16": np.int16,
-    "INT32": np.int32,
-    "INT64": np.int64,
-    "UINT8": np.uint8,
-    "UINT16": np.uint16,
-    "UINT32": np.uint32,
-    "UINT64": np.uint64,
-    "BOOL": np.bool_,
+# Triton ensemble 后处理输出的默认 tensor 名
+_DEFAULT_INPUT_NAME = "raw_image"
+_DEFAULT_OUTPUT_NAMES = [
+    "num_dets",
+    "detection_boxes",
+    "detection_scores",
+    "detection_classes",
+    "transform_metadata",
+]
+
+# SHM 输出缓冲区规格（max_dets=300，与 ../triton/model_repository/*/config.pbtxt 对齐）
+_DEFAULT_OUTPUT_SPECS: Dict[str, Tuple[Tuple[int, ...], np.dtype]] = {
+    "num_dets": ((1, 1), np.int32),
+    "detection_boxes": ((1, 300, 4), np.float32),
+    "detection_scores": ((1, 300), np.float32),
+    "detection_classes": ((1, 300), np.int32),
+    "transform_metadata": ((1, 6), np.float32),
 }
+
+# 线程本地 TritonClient 缓存：减少 HTTP/SHM 多模型场景下的连接开销。
+# gRPC 客户端在 TritonClient 内部已按 URL 进程级共享，无需此处再缓存。
+_thread_local = threading.local()
+
+
+def _get_shared_triton_client(url: str, protocol: str) -> TritonClient:
+    """获取同线程内复用的 HTTP/SHM TritonClient 实例。"""
+    if protocol == "grpc":
+        return TritonClient(url=url, protocol=protocol, verbose=False)
+    if not hasattr(_thread_local, "clients"):
+        _thread_local.clients = {}
+    key = (url, protocol)
+    client = _thread_local.clients.get(key)
+    if client is None or getattr(client, "_closed", False):
+        client = TritonClient(url=url, protocol=protocol, verbose=False)
+        _thread_local.clients[key] = client
+    return client
 
 
 class YOLOTritonFast:
-    """高性能 YOLO Triton 客户端（仿射变换 + 可选共享内存输入/输出）"""
+    """YOLO Triton 客户端：基于 triton_client.TritonClient 封装。"""
 
     def __init__(
         self,
         url: str = "localhost:38000",
-        model_name: str = "yolo11_plan",
+        model_name: str = "yolo26_ensemble",
         input_size: int = 640,
         conf_thresh: float = 0.3,
         iou_thresh: float = 0.45,
@@ -210,16 +101,22 @@ class YOLOTritonFast:
         output_name: str = "output0",
         output_format: str = "yolo_v8_v11",
         use_shared_memory: bool = True,
+        protocol: str = "shm",
     ):
         self.url = url
         self.model_name = model_name
         self.input_size = input_size
         self.conf_thresh = conf_thresh
+        # iou_thresh / output_format 在此封装中不再使用，保留参数以兼容旧接口
         self.iou_thresh = iou_thresh
-        self.input_name = input_name
-        self.output_name = output_name
         self.output_format = output_format
-        self.use_shared_memory = use_shared_memory
+        self.protocol = protocol.lower()
+        if self.protocol not in ("grpc", "http", "shm"):
+            raise ValueError(f"不支持的 protocol: {protocol}")
+
+        # 兼容旧配置中传入的 images / output0：实际使用 ensemble 默认名
+        self.input_name = input_name if input_name != "images" else _DEFAULT_INPUT_NAME
+        self.output_names = _DEFAULT_OUTPUT_NAMES
 
         if label_map is None:
             self.label_map = dict(_DEFAULT_COCO_LABEL_MAP)
@@ -227,280 +124,92 @@ class YOLOTritonFast:
             self.label_map = {int(k): v for k, v in label_map.items()}
         self.num_classes = len(self.label_map)
 
-        # 输入共享内存相关状态
-        self._shm_input_region_name: Optional[str] = None
-        self._shm_input_size: int = 0
-        self._shm_input_mmap: Optional[mmap.mmap] = None
-        self._shm_input_registered: bool = False
-
-        # 输出共享内存相关状态
-        self._shm_output_region_name: Optional[str] = None
-        self._shm_output_size: int = 0
-        self._shm_output_mmap: Optional[mmap.mmap] = None
-        self._shm_output_registered: bool = False
-        self._shm_output_shape: Optional[Tuple[int, ...]] = None
-        self._shm_output_dtype: Optional[np.dtype] = None
-
-        # 关闭状态标志，防止 close() 被重复调用/重复打印日志
+        self._client: Optional[TritonClient] = None
+        self._protocol = "http"
+        self._output_specs: Optional[Dict[str, Tuple[Tuple[int, ...], np.dtype]]] = None
         self._closed = False
 
-        self.client = httpclient.InferenceServerClient(url=url, verbose=False, concurrency=1)
-        if not self.client.is_server_live():
+        # 复用同线程 HTTP/SHM 客户端，gRPC 在 TritonClient 内部已进程级共享
+        self._client = _get_shared_triton_client(url, self.protocol)
+        if not self._client.is_server_live():
             raise RuntimeError(f"Triton 服务未存活: {url}")
-        if not self.client.is_model_ready(model_name):
+        if not self._client.is_model_ready(model_name):
             raise RuntimeError(f"模型 {model_name} 未就绪")
 
-        # 启动时清理本模型遗留的共享内存（异常退出、kill -9 等场景）
-        if self.use_shared_memory:
-            self._cleanup_stale_shared_memory()
-
-        # 初始化共享内存（失败则回退 HTTP）
-        if self.use_shared_memory:
-            self._setup_input_shared_memory()
-            self._setup_output_shared_memory()
-        else:
-            logger.info("共享内存已显式关闭，将使用 HTTP numpy 传输")
-
-        # 注册进程退出时的兜底清理，避免正常停止/重启后共享内存残留
-        self._atexit_handle = atexit.register(self.close)
+        self._protocol = self.protocol
+        if self.protocol == "shm":
+            try:
+                self._setup_shared_memory()
+                logger.info(f"YOLO Triton 客户端将使用共享内存协议: {url}")
+            except Exception as e:
+                logger.warning(f"共享内存初始化失败，回退到 HTTP: {e}")
+                self._fallback_to_http()
+        elif self.protocol == "http":
+            logger.info(f"YOLO Triton 客户端将使用 HTTP 协议: {url}")
+        elif self.protocol == "grpc":
+            logger.info(f"YOLO Triton 客户端将使用 gRPC 协议: {url}")
 
         if warmup:
-            logger.info("Warmup 中...")
-            dummy = np.zeros((1, 3, input_size, input_size), dtype=np.float32)
-            for _ in range(3):
-                self._infer_raw(dummy)
-            logger.info("✅ Triton 高性能客户端连接成功")
+            try:
+                self._warmup()
+            except Exception as e:
+                if self._protocol == "shm":
+                    logger.warning(f"共享内存 Warmup 失败，回退到 HTTP: {e}")
+                    self._fallback_to_http()
+                    self._warmup()
+                else:
+                    raise
 
-    # ---------- 共享内存管理 ----------
-    def _cleanup_stale_shared_memory(self):
+        logger.info(
+            f"✅ YOLO Triton 客户端连接成功 | protocol={self._protocol}, "
+            f"model={model_name}, input_size={input_size}"
+        )
+
+    # ---------- 共享内存 / 协议回退 ----------
+    def _setup_shared_memory(self) -> None:
+        """复用同线程 SHM 客户端并预置输出缓冲区规格。"""
+        self._client = _get_shared_triton_client(self.url, "shm")
+        self._output_specs = dict(_DEFAULT_OUTPUT_SPECS)
+
+    def _fallback_to_http(self) -> None:
+        """回退到 HTTP 协议（复用同线程共享客户端）。"""
+        self._protocol = "http"
+        self._output_specs = None
+        self._client = _get_shared_triton_client(self.url, "http")
+
+    def _warmup(self) -> None:
+        """使用一张与模型输入尺寸一致的黑图预热推理。"""
+        logger.info("Warmup 中...")
+        dummy = np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8)
+        self.predict(dummy, classes=None)
+        logger.info("Warmup 完成")
+
+    # ---------- 生命周期 ----------
+    def close(self) -> None:
         """
-        启动时清理遗留的 Triton 共享内存文件。
-        由模块级 _cleanup_all_aidet_shm 统一处理，支持跨容器/按年龄清理。
+        标记当前 YOLO 客户端为已关闭。
+
+        注意：底层 TritonClient 在同一线程内被多个模型实例复用，因此此处不关闭
+        底层连接，避免影响同线程其他模型。线程退出时由 Python 垃圾回收自动释放。
         """
-        _cleanup_all_aidet_shm()
-
-    def _setup_input_shared_memory(self):
-        """创建 POSIX 共享内存并在 Triton Server 注册输入区域"""
-        if not _HAS_POSIX_IPC:
-            logger.warning("未安装 posix_ipc，无法使用输入共享内存，回退到 HTTP")
-            return
-
-        input_shape = (1, 3, self.input_size, self.input_size)
-        byte_size = int(np.prod(input_shape)) * np.dtype(np.float32).itemsize
-
-        region_name = f"aidet_{self.model_name}_input_{_get_hostname_short()}_{os.getpid()}_{threading.current_thread().ident}"
-        shm_name = f"/{region_name}"
-
-        try:
-            try:
-                posix_ipc.unlink_shared_memory(shm_name)
-            except posix_ipc.ExistentialError:
-                pass
-
-            shm = posix_ipc.SharedMemory(shm_name, posix_ipc.O_CREAT, size=byte_size)
-            fd = shm.fd
-            mm = mmap.mmap(fd, byte_size)
-            os.close(fd)
-
-            self.client.register_system_shared_memory(region_name, region_name, byte_size)
-
-            self._shm_input_region_name = region_name
-            self._shm_input_size = byte_size
-            self._shm_input_mmap = mm
-            self._shm_input_registered = True
-
-            logger.info(
-                f"输入共享内存已创建并注册 | region={region_name}, "
-                f"size={byte_size / 1024 / 1024:.2f}MB, shape={input_shape}"
-            )
-        except Exception as e:
-            logger.warning(f"输入共享内存初始化失败，回退到 HTTP: {e}")
-            self._release_input_shared_memory()
-
-    def _setup_output_shared_memory(self):
-        """查询模型元数据/配置，创建并注册输出共享内存区域"""
-        if not _HAS_POSIX_IPC:
-            logger.warning("未安装 posix_ipc，无法使用输出共享内存，回退到 HTTP")
-            return
-
-        def _triton_dtype_to_np(dtype_str: str) -> Optional[np.dtype]:
-            # 兼容 "FP32" 和 "TYPE_FP32" 两种形式
-            return _TRITON_DTYPE_MAP.get(dtype_str) or _TRITON_DTYPE_MAP.get(dtype_str.replace("TYPE_", "", 1))
-
-        try:
-            metadata = self.client.get_model_metadata(self.model_name)
-            output_spec = None
-            for out in metadata.get("outputs", []):
-                if out.get("name") == self.output_name:
-                    output_spec = out
-                    break
-
-            if output_spec is None:
-                logger.warning(f"模型元数据中未找到输出 {self.output_name}，输出共享内存不可用")
-                return
-
-            shape = tuple(int(d) for d in output_spec.get("shape", []))
-            dtype_str = output_spec.get("datatype", "FP32")
-
-            # metadata 里 batch 维度可能为 -1，此时从 model config 取真实 dims + max_batch_size
-            if not shape or any(d <= 0 for d in shape):
-                try:
-                    model_cfg = self.client.get_model_config(self.model_name)
-                    max_batch = int(model_cfg.get("max_batch_size", 0))
-                    for out in model_cfg.get("output", []):
-                        if out.get("name") == self.output_name:
-                            dims = [int(d) for d in out.get("dims", [])]
-                            shape = tuple(dims)
-                            dtype_str = out.get("data_type", dtype_str)
-                            break
-                except Exception as e:
-                    logger.warning(f"从 model config 获取输出 shape 失败: {e}")
-
-            if not shape or any(d <= 0 for d in shape):
-                logger.warning(f"输出 shape 非法: {shape}，输出共享内存不可用")
-                return
-
-            dtype = _triton_dtype_to_np(dtype_str)
-            if dtype is None:
-                logger.warning(f"不支持的输出数据类型: {dtype_str}，输出共享内存不可用")
-                return
-            byte_size = int(np.prod(shape)) * np.dtype(dtype).itemsize
-
-            region_name = f"aidet_{self.model_name}_output_{_get_hostname_short()}_{os.getpid()}_{threading.current_thread().ident}"
-            shm_name = f"/{region_name}"
-
-            try:
-                posix_ipc.unlink_shared_memory(shm_name)
-            except posix_ipc.ExistentialError:
-                pass
-
-            shm = posix_ipc.SharedMemory(shm_name, posix_ipc.O_CREAT, size=byte_size)
-            fd = shm.fd
-            mm = mmap.mmap(fd, byte_size)
-            os.close(fd)
-
-            self.client.register_system_shared_memory(region_name, region_name, byte_size)
-
-            self._shm_output_region_name = region_name
-            self._shm_output_size = byte_size
-            self._shm_output_mmap = mm
-            self._shm_output_shape = shape
-            self._shm_output_dtype = dtype
-            self._shm_output_registered = True
-
-            logger.info(
-                f"输出共享内存已创建并注册 | region={region_name}, "
-                f"size={byte_size / 1024:.2f}KB, shape={shape}, dtype={dtype_str}"
-            )
-        except Exception as e:
-            logger.warning(f"输出共享内存初始化失败，回退到 HTTP: {e}")
-            self._release_output_shared_memory()
-
-    def _release_input_shared_memory(self):
-        """释放输入共享内存资源（幂等）"""
-        if self._shm_input_registered and self._shm_input_region_name:
-            try:
-                self.client.unregister_system_shared_memory(self._shm_input_region_name)
-            except Exception:
-                pass
-            self._shm_input_registered = False
-
-        if self._shm_input_mmap is not None:
-            try:
-                self._shm_input_mmap.close()
-            except Exception:
-                pass
-            self._shm_input_mmap = None
-
-        if self._shm_input_region_name:
-            try:
-                posix_ipc.unlink_shared_memory(f"/{self._shm_input_region_name}")
-            except Exception:
-                pass
-            self._shm_input_region_name = None
-        self._shm_input_size = 0
-
-    def _release_output_shared_memory(self):
-        """释放输出共享内存资源（幂等）"""
-        if self._shm_output_registered and self._shm_output_region_name:
-            try:
-                self.client.unregister_system_shared_memory(self._shm_output_region_name)
-            except Exception:
-                pass
-            self._shm_output_registered = False
-
-        if self._shm_output_mmap is not None:
-            try:
-                self._shm_output_mmap.close()
-            except Exception:
-                pass
-            self._shm_output_mmap = None
-
-        if self._shm_output_region_name:
-            try:
-                posix_ipc.unlink_shared_memory(f"/{self._shm_output_region_name}")
-            except Exception:
-                pass
-            self._shm_output_region_name = None
-
-        self._shm_output_size = 0
-        self._shm_output_shape = None
-        self._shm_output_dtype = None
-
-    def close(self):
-        """释放客户端占用的资源，包括共享内存（幂等）"""
-        if self._closed:
-            return
         self._closed = True
 
-        # 注销进程退出兜底，避免 close() 后被重复执行
-        if hasattr(self, "_atexit_handle"):
-            try:
-                atexit.unregister(self._atexit_handle)
-            except Exception:
-                pass
-            delattr(self, "_atexit_handle")
-
-        self._release_input_shared_memory()
-        self._release_output_shared_memory()
-
-        if self.client is not None:
-            try:
-                self.client.close()
-            except Exception as e:
-                logger.debug(f"关闭 Triton 客户端时异常: {e}")
-            self.client = None
-
-        logger.info("YOLOTritonFast 客户端已关闭")
-
     def __del__(self):
-        # 解释器关闭期间，self.client 等依赖可能已被部分回收，
-        # 此时做 HTTP/共享内存清理容易引发 segfault，直接跳过。
-        if sys.is_finalizing() or self._closed:
-            return
-        self.close()
+        # 不关闭共享客户端，避免影响同线程其他实例
+        pass
 
     # ---------- 公共流程 ----------
     def predict(self, frame: np.ndarray, classes: Optional[List[int]] = None) -> List[Box]:
-        """推理单帧：预处理 → 推理 → 解码 → 仿射逆变换 → 构造 Box"""
+        """推理单帧：送入原图 → 解析 ensemble 输出 → 坐标映射 → 构造 Box。"""
         t0 = time.time()
-        input_tensor, M_inv = self._preprocess(frame)
+        input_arr = self._prepare_input(frame)
         t1 = time.time()
 
-        output = self._infer_raw(input_tensor)
+        result = self._infer(input_arr)
         t2 = time.time()
 
-        # 解码：从模型输出提取 xyxy（input_size 空间）+ scores + cls_ids
-        if self.output_format == "yolo_v12_end2end":
-            boxes_xyxy, scores, cls_ids = self._decode_v12(output, classes)
-        elif self.output_format == "yolo_v5":
-            boxes_xyxy, scores, cls_ids = self._decode_v5(output, classes)
-        else:
-            boxes_xyxy, scores, cls_ids = self._decode_v11(output, classes)
-
-        # 仿射逆变换：input_size 空间 → 原图
-        boxes_xyxy = self._affine_inv_boxes(boxes_xyxy, M_inv)
-        boxes = self._to_boxes(boxes_xyxy, scores, cls_ids)
+        transform = self._extract_transform(result.get("transform_metadata"))
+        boxes = self._parse_outputs(result, frame.shape[:2], classes, transform)
         t3 = time.time()
 
         filter_info = f" 类别过滤={classes}" if classes else ""
@@ -511,164 +220,126 @@ class YOLOTritonFast:
         )
         return boxes
 
-    # ---------- 预处理：仿射变换 ----------
-    def _get_affine_matrix(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        计算原图 → input_size×input_size 的仿射矩阵及其逆矩阵。
-        采用标准 letterbox（等比缩放 + 居中填充）。
-        """
-        h, w = img.shape[:2]
-        scale = self.input_size / max(h, w)
-        new_w, new_h = w * scale, h * scale
-        dx = (self.input_size - new_w) / 2
-        dy = (self.input_size - new_h) / 2
-        M = np.array([[scale, 0, dx], [0, scale, dy]], dtype=np.float64)
-        M_inv = cv2.invertAffineTransform(M)
-        return M, M_inv
-
-    def _preprocess(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """仿射变换预处理，返回 (tensor, M_inv)"""
-        M, M_inv = self._get_affine_matrix(img)
-        warped = cv2.warpAffine(
-            img, M, (self.input_size, self.input_size),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(114, 114, 114),
-        )
-        warped = warped[:, :, ::-1].astype(np.float32, copy=False) / 255.0
-        chw = np.ascontiguousarray(np.transpose(warped, (2, 0, 1)))
-        return np.expand_dims(chw, axis=0), M_inv
+    # ---------- 输入构造 ----------
+    @staticmethod
+    def _prepare_input(frame: np.ndarray) -> np.ndarray:
+        """将 OpenCV BGR 帧转为 Triton ensemble 期望的 RGB [1,H,W,3] uint8。"""
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            raise ValueError(f"输入必须是 HWC BGR 图像，当前 shape={frame.shape}")
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return rgb[np.newaxis, ...].astype(np.uint8, copy=False)
 
     # ---------- 推理 ----------
-    def _infer_raw(self, input_tensor: np.ndarray) -> np.ndarray:
-        inputs = [httpclient.InferInput(self.input_name, input_tensor.shape, "FP32")]
+    def _infer(self, input_arr: np.ndarray) -> Dict[str, np.ndarray]:
+        """调用 TritonClient 完成推理，SHM 失败时一次性回退 HTTP。"""
+        if self._client is None or self._closed:
+            raise RuntimeError("Triton 客户端已关闭")
 
-        # 输入共享内存
-        if self._shm_input_registered and self._shm_input_mmap is not None:
-            self._shm_input_mmap.seek(0)
-            self._shm_input_mmap.write(input_tensor.tobytes())
-            self._shm_input_mmap.flush()
-            inputs[0].set_shared_memory(self._shm_input_region_name, self._shm_input_size)
-        else:
-            inputs[0].set_data_from_numpy(input_tensor)
+        try:
+            return self._client.infer(
+                model_name=self.model_name,
+                inputs={self.input_name: input_arr},
+                outputs=self.output_names,
+                output_specs=self._output_specs if self._protocol == "shm" else None,
+            )
+        except Exception as e:
+            if self._protocol == "shm":
+                logger.warning(f"SHM 推理失败，尝试回退到 HTTP: {e}")
+                self._fallback_to_http()
+                return self._client.infer(
+                    model_name=self.model_name,
+                    inputs={self.input_name: input_arr},
+                    outputs=self.output_names,
+                )
+            raise
 
-        # 输出共享内存
-        outputs = [httpclient.InferRequestedOutput(self.output_name)]
-        if self._shm_output_registered:
-            outputs[0].set_shared_memory(self._shm_output_region_name, self._shm_output_size)
-
-        results = self.client.infer(self.model_name, inputs=inputs, outputs=outputs)
-
-        # 从共享内存读取输出，或从 HTTP 响应读取
-        if self._shm_output_registered and self._shm_output_mmap is not None:
-            total_elements = int(np.prod(self._shm_output_shape))
-            output = np.frombuffer(
-                self._shm_output_mmap,
-                dtype=self._shm_output_dtype,
-                count=total_elements,
-            ).reshape(self._shm_output_shape)
-            # 去掉 batch 维度，保持与原来 as_numpy()[0] 一致
-            if output.shape[0] == 1:
-                output = output[0]
-            return output
-        else:
-            return results.as_numpy(self.output_name)[0]
-
-    # ---------- 解码：yolo_v5 ----------
-    def _decode_v5(self, output: np.ndarray, classes: Optional[List[int]]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        YOLOv5 输出解码。
-        输出形状: [num_anchors, 5 + num_classes]
-          - [:4]   框中心 xywh
-          - [4]    objectness
-          - [5:]   各类别条件概率
-        最终分数 = objectness * max(class_score)
-        """
-        preds = output                                            # [25200, 9]
-        boxes_xywh = preds[:, :4]
-        obj_scores = preds[:, 4]
-        cls_scores = preds[:, 5:5 + self.num_classes]
-
-        scores = obj_scores * cls_scores.max(axis=1)
-        cls_ids = cls_scores.argmax(axis=1)
-
-        mask = scores >= self.conf_thresh
-        if not mask.any():
-            return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-        boxes_xywh, scores, cls_ids = boxes_xywh[mask], scores[mask], cls_ids[mask]
-
-        if classes:
-            cls_mask = np.isin(cls_ids, list(classes))
-            if not cls_mask.any():
-                return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-            boxes_xywh, scores, cls_ids = boxes_xywh[cls_mask], scores[cls_mask], cls_ids[cls_mask]
-
-        x, y, w, h = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
-        boxes_xyxy = np.stack([x - w / 2, y - h / 2, x + w / 2, y + h / 2], axis=1)
-
-        indices = cv2.dnn.NMSBoxes(boxes_xyxy.tolist(), scores.tolist(),
-                                   self.conf_thresh, self.iou_thresh)
-        if len(indices) == 0:
-            return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-        indices = indices.flatten()
-        return boxes_xyxy[indices], scores[indices], cls_ids[indices]
-
-    # ---------- 解码：yolo_v8_v11 ----------
-    def _decode_v11(self, output: np.ndarray, classes: Optional[List[int]]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        preds = np.transpose(output)                       # [8400, N+4]
-        boxes_xywh = preds[:, :4]
-        cls_scores = preds[:, 4:4 + self.num_classes]
-        scores = cls_scores.max(axis=1)
-        cls_ids = cls_scores.argmax(axis=1)
-
-        mask = scores >= self.conf_thresh
-        if not mask.any():
-            return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-        boxes_xywh, scores, cls_ids = boxes_xywh[mask], scores[mask], cls_ids[mask]
-
-        if classes:
-            cls_mask = np.isin(cls_ids, list(classes))
-            if not cls_mask.any():
-                return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-            boxes_xywh, scores, cls_ids = boxes_xywh[cls_mask], scores[cls_mask], cls_ids[cls_mask]
-
-        x, y, w, h = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
-        boxes_xyxy = np.stack([x - w / 2, y - h / 2, x + w / 2, y + h / 2], axis=1)
-
-        indices = cv2.dnn.NMSBoxes(boxes_xyxy.tolist(), scores.tolist(),
-                                   self.conf_thresh, self.iou_thresh)
-        if len(indices) == 0:
-            return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-        indices = indices.flatten()
-        return boxes_xyxy[indices], scores[indices], cls_ids[indices]
-
-    # ---------- 解码：yolo_v12_end2end ----------
-    def _decode_v12(self, output: np.ndarray, classes: Optional[List[int]]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        preds = output[0] if output.ndim == 3 else output   # [300, 6]
-        scores = preds[:, 4]
-        mask = scores >= self.conf_thresh
-        if not mask.any():
-            return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-
-        boxes_xyxy, scores, cls_ids = preds[mask, :4], scores[mask], preds[mask, 5].astype(np.int32)
-
-        if classes:
-            cls_mask = np.isin(cls_ids, list(classes))
-            if not cls_mask.any():
-                return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=np.int32)
-            boxes_xyxy, scores, cls_ids = boxes_xyxy[cls_mask], scores[cls_mask], cls_ids[cls_mask]
-
-        return boxes_xyxy, scores, cls_ids
-
-    # ---------- 坐标映射：仿射逆变换 ----------
+    # ---------- 输出解析与坐标映射 ----------
     @staticmethod
-    def _affine_inv_boxes(boxes_xyxy: np.ndarray, M_inv: np.ndarray) -> np.ndarray:
-        """将 [N,4] xyxy 框从 input_size 空间映射回原图"""
-        N = len(boxes_xyxy)
-        pts = boxes_xyxy.reshape(-1, 2)          # [N*2, 2]
-        pts = np.hstack([pts, np.ones((N * 2, 1))])  # [N*2, 3]
-        mapped = (M_inv @ pts.T).T               # [N*2, 2]
-        return mapped.reshape(N, 4)
+    def _extract_transform(transform_metadata: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """将 Triton 返回的 [1,6] transform_metadata 转成 2x3 仿射矩阵。"""
+        if transform_metadata is None:
+            return None
+        try:
+            flat = np.asarray(transform_metadata).reshape(-1)
+            if flat.shape[0] != 6:
+                logger.warning(f"transform_metadata 长度不是 6: {flat.shape}，将使用自计算映射")
+                return None
+            return flat.reshape(2, 3).astype(np.float64)
+        except Exception as e:
+            logger.warning(f"解析 transform_metadata 失败: {e}，将使用自计算映射")
+            return None
+
+    def _parse_outputs(
+        self,
+        result: Dict[str, np.ndarray],
+        frame_shape: Tuple[int, int],
+        classes: Optional[List[int]],
+        transform: Optional[np.ndarray],
+    ) -> List[Box]:
+        """从 ensemble 输出中提取检测结果并映射回原图坐标。"""
+        num_dets = int(result["num_dets"].flat[0])
+        if num_dets <= 0:
+            return []
+
+        boxes_xyxy = result["detection_boxes"][0, :num_dets]  # [N, 4]
+        scores = result["detection_scores"][0, :num_dets]     # [N]
+        cls_ids = result["detection_classes"][0, :num_dets]   # [N]
+
+        # 置信度过滤（后端可能已过滤，这里再做一次应用层过滤）
+        conf_mask = scores >= self.conf_thresh
+        if not conf_mask.any():
+            return []
+        boxes_xyxy = boxes_xyxy[conf_mask]
+        scores = scores[conf_mask]
+        cls_ids = cls_ids[conf_mask]
+
+        # 类别过滤
+        if classes:
+            cls_mask = np.isin(cls_ids, list(classes))
+            if not cls_mask.any():
+                return []
+            boxes_xyxy = boxes_xyxy[cls_mask]
+            scores = scores[cls_mask]
+            cls_ids = cls_ids[cls_mask]
+
+        # 坐标映射：优先使用 Triton 返回的仿射矩阵
+        boxes_xyxy = self._map_boxes_to_original(boxes_xyxy, frame_shape, transform)
+        return self._to_boxes(boxes_xyxy, scores, cls_ids)
+
+    def _map_boxes_to_original(
+        self,
+        boxes_xyxy: np.ndarray,
+        frame_shape: Tuple[int, int],
+        transform: Optional[np.ndarray],
+    ) -> np.ndarray:
+        """将检测框从模型输入空间映射回原图。优先使用 Triton 返回的 2x3 仿射矩阵。"""
+        orig_h, orig_w = frame_shape
+        if orig_h == 0 or orig_w == 0:
+            return boxes_xyxy
+
+        if transform is not None:
+            # 对 xyxy 的四个角点应用仿射矩阵
+            N = boxes_xyxy.shape[0]
+            corners = boxes_xyxy.reshape(-1, 2)  # [N*4, 2]
+            mapped = (transform[:, :2] @ corners.T).T + transform[:, 2]
+            mapped = mapped.reshape(N, 4)
+        else:
+            # 无 transform_metadata 时回退到自计算 letterbox 映射
+            scale = self.input_size / max(orig_h, orig_w)
+            new_w, new_h = orig_w * scale, orig_h * scale
+            pad_x = (self.input_size - new_w) / 2.0
+            pad_y = (self.input_size - new_h) / 2.0
+
+            mapped = boxes_xyxy.copy()
+            mapped[:, [0, 2]] = (mapped[:, [0, 2]] - pad_x) / scale
+            mapped[:, [1, 3]] = (mapped[:, [1, 3]] - pad_y) / scale
+
+        # 裁剪到原图边界
+        mapped[:, 0] = np.clip(mapped[:, 0], 0, orig_w)
+        mapped[:, 1] = np.clip(mapped[:, 1], 0, orig_h)
+        mapped[:, 2] = np.clip(mapped[:, 2], 0, orig_w)
+        mapped[:, 3] = np.clip(mapped[:, 3], 0, orig_h)
+        return mapped
 
     # ---------- 构造 Box 列表 ----------
     def _to_boxes(self, boxes_xyxy: np.ndarray, scores: np.ndarray, cls_ids: np.ndarray) -> List[Box]:
@@ -677,8 +348,9 @@ class YOLOTritonFast:
             x1, y1, x2, y2 = boxes_xyxy[i]
             label = self.label_map.get(int(cls_ids[i]), f"class_{int(cls_ids[i])}")
             result.append(Box(
-                label=label, score=float(scores[i]),
-                box=[max(0, x1), max(0, y1), max(0, x2), max(0, y2)],
+                label=label,
+                score=float(scores[i]),
+                box=[max(0.0, x1), max(0.0, y1), max(0.0, x2), max(0.0, y2)],
                 mask=None,
             ))
         return result

@@ -17,10 +17,10 @@ logger = setup_logger("vl_prompts")
 
 
 VL_SYSTEM_PROMPT = (
-    "你是工业安全视觉复核专家，专门从施工现场图像中识别个人防护装备（PPE）的缺失情况。"
+    "你是工业安全视觉复核专家"
     "你的回答必须严格遵循以下 JSON 格式，不要输出任何额外文字、解释或 markdown 代码块：\n"
     "{\n"
-    '  "has_violation": boolean,  // true=存在违规（缺少指定装备），false=合规（装备已佩戴）\n'
+    '  "has_violation": boolean,  // true=存在违规，false=合规\n'
     '  "reason": "string",        // 简述判定理由；若合规请固定输出 "无违规"\n'
     '  "details": ["string"]      // 违规类型标识数组，无违规则必须为空列表 []\n'
     "}\n"
