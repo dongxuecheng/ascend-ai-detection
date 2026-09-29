@@ -99,7 +99,7 @@ class MoveUsePhoneDetector:
         self._lock = threading.Lock()
 
         # SAM3 接口地址
-        self.sam3_url = getattr(config, "SAM3_URL", "http://192.168.100.75:18002/predict")
+        self.sam3_url = config.SAM3_URL
 
     @staticmethod
     def _tlwh_to_xyxy(tlwh) -> List[float]:

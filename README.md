@@ -129,6 +129,7 @@ AIDetection/
 │   ├── llm/                        # OpenAI 兼容视觉接口客户端、VL 复核、prompt
 │   └── utils/                      # Box、mask/RLE、过滤、去重、OSD、日志
 ├── tests/local/                    # 图片、Triton、VL 手动联调脚本
+├── tests/unit/                     # 无需服务的 SAM3 接口和 mask 回归测试
 ├── assets/                         # 图片与结果素材（按环境准备）
 └── logs/                           # 默认日志输出目录
 ```
@@ -143,7 +144,7 @@ AIDetection/
 | --- | --- | --- | --- |
 | 任务/告警平台 | 任务、预览地址、围栏、告警接收 | `GET_TASK_URL`、`GET_RTSP_URL`、`GET_FENCE_URL`、`UPLOAD_URL` | 完整生产流程 |
 | C++ RTSP 服务 | 解码摄像头视频，通过 gRPC 管理流并写入 SHM | `STREAM_SERVER_ADDRESS` | 完整视频流程 |
-| SAM3 | 文本提示词驱动的检测/分割 | YAML 的 `sam3_url_groups`、`SAM3_URL_OBJ` | 配置了 SAM3 的算法或内部调用 SAM3 的检测器 |
+| SAM3 | 文本提示词驱动的检测/分割 | `SAM3_URL`；可用 `SAM3_URL_OBJ` 或 YAML 的 `sam3_url_groups` 覆盖 | 配置了 SAM3 的算法或内部调用 SAM3 的检测器 |
 | Triton YOLO ensemble | 预检测和纯 YOLO 输入 | `TRITON_YOLO_URL`、`models.yaml` | 配置了 `yolo_pre_detect` 的算法 |
 | Triton 分类模型 | 对规则命中的裁剪区域复核 | `classification_configs`、`algorithm_classifiers` | 显式绑定分类器时 |
 | OpenAI 兼容视觉服务 | VL 二次确认 | `VL_*`、`algorithm_vl_config` | 全局和算法开关均开启时 |
@@ -173,7 +174,7 @@ sudo mkdir -p /dev/shm/aidetection /mnt/yolo/images /mnt/yolo/artifacts
 mkdir -p logs
 ```
 
-编辑 `.env`，设置任务平台、SAM3、Triton、RTSP 服务及 VL 地址。同时检查 `config/algorithms.yaml` 的 `sam3_url_groups`，其中的具体 URL 不会被同名环境变量替换。
+编辑 `.env`，设置任务平台、SAM3、Triton、RTSP 服务及 VL 地址。SAM3 已适配 `ascend-sam3` 的 `/predict`；默认 `sam3_url_groups: []`，统一使用 `SAM3_URL`。如果自行配置了 URL 分组，其中的具体 URL 不会被同名环境变量替换。
 
 模板使用 `STREAM_SERVER_ADDRESS=grpc_rtsp:50051`、`TRITON_YOLO_URL=triton:38000`。这些服务名只有在相应 Docker 网络中可解析时才有效；独立部署时应填写可达地址。端口必须是从 **应用容器内** 实际访问的服务端口，不能把宿主机映射端口和容器监听端口混淆。
 
@@ -312,8 +313,9 @@ python -c "from config.config import config; print(config.ALGORITHM_CODES)"
 | `REQUEST_INTERVAL` | `180` | 任务管理器和编排器各自的轮询间隔（秒）；模板设为 `10` |
 | `STREAM_SERVER_ADDRESS` | `192.168.100.74:50051` | RTSP gRPC 地址；模板设为 `grpc_rtsp:50051` |
 | `STREAM_RECOVERY_COOLDOWN_SEC` | `10.0` | 两次流恢复之间的最小间隔（秒） |
-| `SAM3_URL` | `http://192.168.100.75:18002/predict` | 保留的常规接口配置；主 worker 不直接用它选择 URL |
-| `SAM3_URL_OBJ` | `http://192.168.100.75:18002/predict-person-about-small-object` | 未分组算法的 SAM3 回退地址 |
+| `SAM3_URL` | `http://192.168.100.75:18002/predict` | ascend-sam3 的完整 JSON 接口地址；按实际单实例/网关地址修改 |
+| `SAM3_URL_OBJ` | 自动使用 `SAM3_URL` | 兼容旧部署变量；显式设置时覆盖未分组算法的地址，也必须使用新 `/predict` 接口 |
+| `SAM3_TIMEOUT_SECONDS` | `30` | HTTP 请求超时秒数；多文本推理或排队较长时按实测调整 |
 | `TRITON_YOLO_URL` | `192.168.100.74:38000` | 当前生产 YOLO/分类的 HTTP/SHM 地址，不带 `http://`；模板用 `triton:38000` |
 | `TRITON_YOLO_GRPC_URL` | `192.168.100.74:38001` | 已定义，但当前主 worker 的 YOLO 工厂未使用 |
 | `TRITON_CLASSIFIER_GRPC_URL` | `192.168.100.74:38001` | 已定义，但当前分类器工厂未使用 |
@@ -338,9 +340,7 @@ supported_codes: ['8']
 sam3_prompts:
   - {code: '8', prompts: [person, person leg], return_mask: false}
 
-sam3_url_groups:
-  - url: 'http://sam3-server:18002/predict'
-    codes: ['8']
+sam3_url_groups: []  # 统一使用环境变量中的服务地址
 
 fence_algorithms:
   - {code: '8'}
@@ -377,9 +377,33 @@ alert_dedup:
 | `alert_dedup` | 冷却秒数与位置 IoU 阈值；未配置或关闭时不执行该步 |
 | `gpu_codes` | 编排器轮询分配的 GPU 编号；当前 CPU 解码配置没有把编号传给后端，不代表已启用 GPU 解码 |
 
-YAML 用 `yaml.safe_load` 读取，没有环境变量插值功能。不要在 `sam3_url_groups.url` 中写 `${SAM3_URL}` 并期待自动展开；修改其中的实际 URL，或移除相应分组使算法使用 `SAM3_URL_OBJ`。
+YAML 用 `yaml.safe_load` 读取，没有环境变量插值功能。不要在 `sam3_url_groups.url` 中写 `${SAM3_URL}` 并期待自动展开；默认保留空列表即可。若需分流，可添加 `{url: 'http://sam3-server:18000/predict', codes: ['8']}`；未分组算法使用 `SAM3_URL_OBJ`，该变量未设置时使用 `SAM3_URL`。
 
 纯 YOLO 输入通常通过不配置 SAM3 prompt 实现，同时必须配置 `yolo_pre_detect` 并使用支持 YOLO 标签的检测器。有一个例外：算法没有 prompt 条目、且任务 `electricFence` 非空时，代码会回退到 `person` prompt。需要明确禁用这类回退时，可给该算法配置 `prompts: []`。算法 `57` 即使上游不走 SAM3，其检测器内部仍会调用 SAM3。
+
+### Ascend SAM3 接口
+
+客户端依据 [ascend-sam3 的服务源码](https://github.com/dongxuecheng/ascend-sam3/blob/246ad1dab6701e48adb02195db46ca1709581226/service/main.py) 适配（核对版本：`246ad1d`）。使用 `POST /predict` 发送 JSON；不直接调用 CANN，也不依赖服务端 worker 的设备编号。
+
+```json
+{
+  "image": "<JPEG 图片的 base64 字符串>",
+  "class_names": ["person", "hard hat"],
+  "confidence": 0.3,
+  "return_mask": true
+}
+```
+
+响应仍为 `{"results": [...]}`，每项包含 `label`、`score`、原图像素坐标 `box: [x1, y1, x2, y2]`。开启 mask 后，额外返回 `mask`、`mask_width`、`mask_height`；`mask` 是相对于检测框的局部掩码，以**行优先、从 1 开始的起点/长度对**编码，不是 COCO 的 `counts`。客户端先解码，再转换为内部列优先 COCO RLE，因此 `Box.compute_mask_array()` 和现有检测规则无需改动。未返回 mask、返回 `null` 或 mask 数据损坏时保留有效检测框；空列表 `mask: []` 表示全背景局部掩码。
+
+升级现有部署时：
+
+1. 将 `.env` 中的 `SAM3_URL` 设置为新服务的完整 `/predict` 地址。上游默认对外端口为 `18000`，本项目保留原环境的 `18002` 默认值，不能据此推断新服务实际端口；也不要修改无关的 `VL_API_URL`。
+2. 删除或注释旧的 `SAM3_URL_OBJ`，使它自动跟随 `SAM3_URL`；需要单独设置时也只能指向新 `/predict`。`predict-person-about-small-object` 不再可用。
+3. 将旧的固定 `sam3_url_groups` 清空，或全部改为新服务地址。使用上游多实例网关时填写网关地址，不要填写仅监听回环的后端端口。
+4. 重启应用，先运行 `--mode sam3-only --no-vl --no-classifier` 的单图测试，再验证开启 mask 的算法。
+
+当前 `call_sam3()` 不再接收旧服务的 `pre_detect_labels`、`merge_results`、`crop_config` 参数，也不再发送 `image_base64`、`prompts`、`confidence_threshold` 字段。Python 调用方仍使用 `prompts` / `confidence_threshold` 参数，客户端映射为新请求字段。上游执行全图多文本推理，**不包含旧服务的小目标预检测与裁剪放大流程**，因此接口适配不代表小目标检测效果与旧服务完全一致，需要用现场图片复核。SAM3 请求失败时仍沿用现有行为：记录错误并返回空列表。
 
 ### 模型配置
 
@@ -477,9 +501,15 @@ VL 客户端请求 JSON 结果，核心字段为 `has_violation`。返回 false 
 
 ## 本地图片与服务联调
 
-这些是依赖真实推理服务的**手动联调脚本**，不是无需外部服务的完整单元测试套件。图片脚本不需要任务平台或 RTSP 服务，也不会调用 `EventUploader` 上传告警。
+`tests/unit/test_sam3.py` 提供不依赖外部服务的 SAM3 接口回归测试。`tests/local/` 中仍是依赖真实推理服务的**手动联调脚本**；图片脚本不需要任务平台或 RTSP 服务，也不会调用 `EventUploader` 上传告警。
 
 ### 1. 单张图片验证 SAM3 和规则
+
+不连接外部服务的接口回归测试（使用标准库 `unittest`，需要已安装项目的图像、配置和 HTTP 依赖）：
+
+```bash
+python -m unittest discover -s tests/unit -p test_sam3.py -v
+```
 
 先在项目中准备图片，并把 SAM3 URL 改为可访问的实际地址：
 
@@ -650,7 +680,7 @@ def detect(
     return []
 ```
 
-`frame` 可选，分发器只在检测器签名支持时传入。`Box.box` 为原图像素坐标 `[x1, y1, x2, y2]`，`source` 区分 SAM3/YOLO；涉及区域分割的规则需要有效 mask 和原图尺寸。SAM3 客户端接受结果项中的 `label`、`score`、`box`、`mask`，上游接口改动时应同步核对解析逻辑。
+`frame` 可选，分发器只在检测器签名支持时传入。`Box.box` 为原图像素坐标 `[x1, y1, x2, y2]`，`source` 区分 SAM3/YOLO；涉及区域分割的规则需要有效 mask 和原图尺寸。SAM3 客户端将上游 `label`、`score`、`box`、`mask`、`mask_width`、`mask_height` 转为统一的 `Box`，同时兼容已有 COCO RLE 字典；上游接口改动时应同步核对解析逻辑。
 
 修改 `.proto` 后，在项目根目录使用匹配的编译工具重新生成：
 
@@ -672,7 +702,8 @@ python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. src/stream/st
 | `grpc_rtsp` 或 `triton` 无法解析 | 服务没有加入对应 Docker 网络，或外部 include 仍为空；调整服务网络或填写实际地址 |
 | gRPC 连接成功但持续没有帧 | 检查 RTSP 是否可用、服务端是否解码、双方 SHM 挂载和权限是否一致；远程主机的 SHM 不会通过 gRPC 自动传输 |
 | 多路高分辨率视频运行异常 | 检查宿主机 `/dev/shm` 容量。8 槽 RGB 缓冲粗略需要 `宽 × 高 × 3 × 8` 字节/流，1080p 约 47.5 MiB/流，另加对齐和 Triton 缓冲；bind mount 场景仅改 Compose `shm_size` 无效 |
-| 改 `.env` 后仍访问旧 SAM3 地址 | 检查 `sam3_url_groups` 中的固定 URL；环境变量不覆盖这部分 YAML |
+| 改 `.env` 后仍访问旧 SAM3 地址 | 检查是否还显式设置旧 `SAM3_URL_OBJ`，以及 `sam3_url_groups` 中是否保留固定 URL |
+| SAM3 返回 404 / 422，或 mask 不生效 | 确认部署的是 ascend-sam3 的 `/predict`，请求使用 `image/class_names/confidence/return_mask`；mask 必须带正确的宽高，不可直接当作 COCO counts |
 | 改 gRPC URL 变量后 YOLO/分类仍走 HTTP/SHM | 当前客户端工厂使用 `TRITON_YOLO_URL` 和固定 `protocol="shm"`，两个 gRPC 地址变量尚未接入主流程 |
 | `--no-shm` 后仍尝试共享内存 | 本地脚本传入的 `use_shared_memory` 参数没有参与 `YOLOTritonFast` 的协议选择；需由调用处显式指定 `protocol="http"` |
 | 没有 worker 或任务被跳过 | 检查平台 `data`、算法允许列表、设备 IP/通道、预览接口返回的 `msg` 和 RTSP 地址 |

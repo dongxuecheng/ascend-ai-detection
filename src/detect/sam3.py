@@ -1,4 +1,5 @@
 import base64
+import time
 from typing import List, Optional
 
 import cv2
@@ -8,21 +9,9 @@ import requests
 from config.config import config
 from utils.logger import setup_logger
 from utils.obj import Box
-import time
+from utils.rle import binary_mask_to_rle
 
 logger = setup_logger("sam3")
-
-# SAM3 默认 crop_config（与接口文档一致）
-DEFAULT_CROP_CONFIG = {
-    "max_size": 640,
-    "padding": 20,
-    "w_diou": 30,
-    "w_expansion": 5,
-    "count_penalty": 120,
-    "nms_threshold": 0.2,
-    "enable_ar_fix": True,
-    "target_ar": 1,
-}
 
 
 def call_sam3(
@@ -30,64 +19,39 @@ def call_sam3(
     prompts: List[str],
     confidence_threshold: float = 0.3,
     return_mask: bool = False,
-    pre_detect_labels: Optional[List[str]] = None,
-    merge_results: bool = True,
-    crop_config: Optional[dict] = None,
     url: Optional[str] = None,
 ) -> List[Box]:
     """
-    调用 SAM3 推理服务，返回检测框列表
+    调用 ascend-sam3 的 POST /predict，返回原图坐标的检测框列表。
 
     :param frame: BGR 格式的 numpy 数组
     :param prompts: 检测目标文本提示词列表，如 ['person', 'head', 'helmet']
-    :param confidence_threshold: 置信度阈值，默认 0.5
+    :param confidence_threshold: 置信度阈值，默认 0.3
     :param return_mask: 是否返回掩码
-    :param pre_detect_labels: 预检测标签列表，默认从 prompts 推断（取第一个）
-    :param merge_results: 是否合并结果，默认 True
-    :param crop_config: 裁剪配置字典，默认使用 DEFAULT_CROP_CONFIG
     :param url: 自定义 SAM3 接口地址；为空时使用 config.SAM3_URL_OBJ
     :return: Box 对象列表
     """
     if not prompts:
         return []
-    logger.info(prompts)
-    logger.info(return_mask)
-
     try:
         # 1. 图片编码为 base64 JPEG
         success, encoded = cv2.imencode(".jpg", frame)
-        # cv2.imwrite("debug_sam3_input.jpg", frame)  # 调试：保存输入图片
         if not success:
             logger.error("JPEG 编码失败")
             return []
         image_b64 = base64.b64encode(encoded).decode("utf-8")
 
-        # 2. 构造 prompts 列表（忽略 boxes 字段）
-        prompt_list = [{"text": p, "boxes": []} for p in prompts]
-
-        # 3. 确定 pre_detect_labels（新接口字段，替代旧的 text 字段）
-        if pre_detect_labels is None:
-            # 默认取 prompts 中的第一个作为预检测标签，若不存在则回退到 person
-            pre_detect_labels = [prompts[0]] if prompts else ["person"]
-
-        # 4. 确定 crop_config
-        effective_crop_config = crop_config if crop_config is not None else DEFAULT_CROP_CONFIG
-
-        # 5. 组装请求体（适配新接口格式）
+        # ascend-sam3 使用全图多文本推理，不支持旧服务的小目标裁剪参数。
         payload = {
-            "image_base64": image_b64,
-            "confidence_threshold": confidence_threshold,
-            "pre_detect_labels": pre_detect_labels,
-            "prompts": prompt_list,
+            "image": image_b64,
+            "class_names": prompts,
+            "confidence": confidence_threshold,
             "return_mask": return_mask,
-            "merge_results": merge_results,
-            "crop_config": effective_crop_config,
         }
 
-        # 6. 发送请求
         effective_url = url if url else config.SAM3_URL_OBJ
         t_http_start = time.time()
-        resp = requests.post(effective_url, json=payload, timeout=30)
+        resp = requests.post(effective_url, json=payload, timeout=config.SAM3_TIMEOUT_SECONDS)
         t_http_end = time.time()
         logger.info(f"SAM3 HTTP 请求耗时: {(t_http_end-t_http_start)*1000:.1f}ms | URL={effective_url}")
         resp.raise_for_status()
@@ -102,14 +66,50 @@ def call_sam3(
         return []
 
 
+def _parse_mask(item: dict) -> Optional[dict]:
+    """将 Ascend 的行优先、1-based 起点/长度 RLE 转为 Box 的 COCO RLE。"""
+    mask = item.get("mask")
+    if mask is None or isinstance(mask, dict):
+        return mask
+    try:
+        width, height = item["mask_width"], item["mask_height"]
+        if (type(width) is not int or type(height) is not int
+                or width <= 0 or height <= 0):
+            raise ValueError("mask_width/mask_height 必须为正整数")
+        x1, y1, x2, y2 = map(int, item["box"])
+        if (height, width) != (y2 - y1, x2 - x1):
+            raise ValueError("局部 mask 尺寸与检测框的整数 ROI 不一致")
+        if not isinstance(mask, list) or len(mask) % 2:
+            raise ValueError("mask 必须为起点/长度成对的列表")
+        if any(type(value) is not int for value in mask):
+            raise ValueError("mask 行程必须为整数")
+
+        total = width * height
+        previous_end = 0
+        for start, length in zip(mask[0::2], mask[1::2]):
+            offset = start - 1
+            if offset < previous_end or length <= 0 or offset + length > total:
+                raise ValueError("mask 行程越界、重叠或长度无效")
+            previous_end = offset + length
+
+        flat = np.zeros(total, dtype=np.uint8)
+        for start, length in zip(mask[0::2], mask[1::2]):
+            flat[start - 1:start - 1 + length] = 1
+        return binary_mask_to_rle(flat.reshape((height, width)))
+    except (KeyError, TypeError, ValueError, OverflowError) as e:
+        # 损坏的 mask 不应导致有效检测框一并丢失。
+        logger.warning("SAM3 mask 解析失败，保留检测框但忽略掩码: %s", e)
+        return None
+
+
 def parse_sam3_response(data) -> List[Box]:
     """
     解析 SAM3 返回的 JSON 为 Box 对象列表
 
     支持多种返回格式：
-      - {"results": [...]}         ← 你的 SAM3 实际格式
-      - {"code": 0, "data": [...]}  ← 常见封装格式
-      - [...]                       ← 直接列表格式
+      - {"results": [...]}，ascend-sam3 实际格式
+      - {"code": 0, "data": [...]}，兼容旧封装
+      - [...]，兼容直接列表
     """
     boxes = []
 
@@ -145,11 +145,15 @@ def parse_sam3_response(data) -> List[Box]:
                 continue
             label = item.get("label", "")
             score = float(item.get("score", 0))
-            box_coords = item.get("box", [0, 0, 0, 0])
-            mask = item.get("mask")
-            boxes.append(Box(label=label, score=score, box=box_coords, mask=mask))
+            box_coords = [float(value) for value in item["box"]]
+            if (len(box_coords) != 4 or not np.isfinite(box_coords).all()
+                    or not np.isfinite(score) or not label
+                    or box_coords[2] <= box_coords[0] or box_coords[3] <= box_coords[1]):
+                raise ValueError("检测框标签、分数或坐标无效")
+            mask = _parse_mask(item)
+            boxes.append(Box(label=label, score=score, box=box_coords, mask=mask, source="SAM3"))
         except Exception as e:
-            logger.error(f"解析 SAM3 结果项失败: {item}, 错误: {e}")
+            logger.error("解析 SAM3 结果项失败: %s", e)
             continue
 
     logger.info(f"SAM3 解析完成: 原始结果数={len(items)}, 有效框数={len(boxes)}")

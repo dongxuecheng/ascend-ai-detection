@@ -103,7 +103,9 @@ class BaseConfig(BaseModel):
     # ---- SAM3 推理服务 ----
     # 支持通过环境变量覆盖，便于 Docker / K8s 部署时注入
     SAM3_URL: str = os.getenv("SAM3_URL", "http://192.168.100.75:18002/predict")
-    SAM3_URL_OBJ: str = os.getenv("SAM3_URL_OBJ", "http://192.168.100.75:18002/predict-person-about-small-object")
+    # 兼容已有部署变量；Ascend 服务只有 /predict，不再区分小目标接口。
+    SAM3_URL_OBJ: str = os.getenv("SAM3_URL_OBJ") or SAM3_URL
+    SAM3_TIMEOUT_SECONDS: float = float(os.getenv("SAM3_TIMEOUT_SECONDS", "30"))
 
     # ---- 任务/告警平台 ----
     # 上传报警记录的接口地址

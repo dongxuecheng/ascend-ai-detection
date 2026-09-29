@@ -146,11 +146,9 @@ sam3_prompts:
   return_mask: true
 # SAM3 接口地址分组配置。
 # 同一 URL 的算法码放在同一个 group 中；未在 groups 中配置的算法码将回退到 config.SAM3_URL_OBJ。
-sam3_url_groups:
-  - url: 'http://192.168.100.75:18002/predict'
-    codes: ['8', '32', '33', '34', '52', '53', '38', '56', '49', '59', '50']
-  - url: 'http://192.168.100.75:18002/predict-person-about-small-object'
-    codes: ['0', '14', '58', '10']
+# ascend-sam3 统一使用 /predict，默认由 SAM3_URL 环境变量指定服务入口。
+# 需要按算法分流时可添加 {url: 'http://sam3-server:18000/predict', codes: ['0']}。
+sam3_url_groups: []
 
 fence_algorithms:
 - {code: '8'}
