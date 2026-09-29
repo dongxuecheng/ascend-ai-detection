@@ -25,9 +25,9 @@ class DepartureDetector:
 
     def __init__(
         self,
-        duration_seconds: float = 900,
-        min_score: float = 0.8,
-        min_area: float = 1000.0,
+        duration_seconds: float = 120,
+        min_score: float = 0.6,
+        min_area: float = 2000.0,
         nms_iou: float = 0.5,
         latch: bool = True,
     ):
@@ -96,7 +96,7 @@ class DepartureDetector:
         return result
 
     @staticmethod
-    def _fence_bbox(fences) -> List[float]:
+    def _fence_bbox(fences, image_width, image_height) -> List[float]:
         """
         计算所有围栏的最小外接矩形 [x1, y1, x2, y2]。
         用于触发离岗告警时返回一个代表监控区域的 Box。
@@ -110,7 +110,7 @@ class DepartureDetector:
                     xs.append(float(pt[0]))
                     ys.append(float(pt[1]))
         if not xs or not ys:
-            return [0.0, 0.0, 0.0, 0.0]
+            return [0.0, 0.0, image_width, image_height]
         return [min(xs), min(ys), max(xs), max(ys)]
 
     def detect(
@@ -163,7 +163,7 @@ class DepartureDetector:
 
             # 构造代表监控区域的告警框
             if fences:
-                box = self._fence_bbox(fences)
+                box = self._fence_bbox(fences, image_width, image_height)
             elif image_width > 0 and image_height > 0:
                 box = [0.0, 0.0, float(image_width), float(image_height)]
             else:

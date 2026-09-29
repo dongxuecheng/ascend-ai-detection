@@ -10,10 +10,12 @@ core/analyzer.py 只负责传统规则分析，VL 相关逻辑统一迁移至此
 """
 
 import json
+import time
 import threading
 import time
 from typing import List
 
+import cv2
 import numpy as np
 
 from config.config import config
@@ -54,6 +56,27 @@ def _get_vl_client():
         except Exception as e:
             logger.warning(f"VL 大模型客户端初始化失败: {e}")
     return _vl_client
+
+
+def _enhance_contrast(crop: np.ndarray) -> np.ndarray:
+    """
+    对 ROI 裁剪图做局部对比度增强（CLAHE）。
+
+    在 LAB 色彩空间的 L（亮度）通道上做 CLAHE，保持颜色不失真，
+    使银灰色反光条在深色衣物背景中更明显（“亮”出来），提升小模型识别率。
+    """
+    if crop is None or crop.size == 0 or crop.ndim != 3 or crop.shape[2] != 3:
+        return crop
+    try:
+        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        lab = cv2.merge((l, a, b))
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    except Exception as e:
+        logger.warning(f"对比度增强失败，使用原始裁剪图: {e}")
+        return crop
 
 
 def vl_analyze_for_task(
@@ -101,30 +124,67 @@ def vl_analyze_for_task(
             continue
 
         try:
-            # 裁剪违规目标区域（上下左右各扩 50%，让大模型看到周围上下文）
+            # 裁剪违规目标区域（上下左右各扩，让大模型看到周围上下文）
             x1, y1, x2, y2 = map(int, v.box)
             w, h = x2 - x1, y2 - y1
-            pad_x = int(w * 0.5)
-            pad_y = int(h * 0.3)
-            cx1 = max(0, x1 - pad_x)
-            cy1 = max(0, y1 - pad_y)
-            cx2 = min(image_width, x2 + pad_x)
-            cy2 = min(image_height, y2 + pad_y)
+            if algo_code == "14":
+                # 香烟目标较小，左右/上下拓展更多，让大模型看到面部上下文
+                pad_x = int(w * 0.1)
+                pad_y = int(h * 0.2)
+            elif algo_code == "10":
+                pad_x = 0
+                pad_y = 0
+            elif algo_code == "32":
+                pad_x = int(w * 0.1)
+                pad_y = int(h * 0.1)
+            else:
+                pad_x = int(w * 0.5)
+                pad_y = int(h * 0.3)
 
-            cy1 -= pad_y
-            cy2 += pad_y
-            cx1 -= pad_x
-            cx2 += pad_x
-            # 越界处理
-            cx1 = max(0, cx1)
-            cy1 = max(0, cy1)
-            cx2 = min(image_width, cx2)
-            cy2 = min(image_height, cy2)
+            # 先按 pad 扩展，再以扩展框中心做 1:1 正方形裁剪
+            ex1 = x1 - pad_x
+            ey1 = y1 - pad_y
+            ex2 = x2 + pad_x
+            ey2 = y2 + pad_y
+            ecx = (ex1 + ex2) / 2.0
+            ecy = (ey1 + ey2) / 2.0
+            side = max(ex2 - ex1, ey2 - ey1)
+            half = side / 2.0
+            cx1 = int(round(ecx - half))
+            cy1 = int(round(ecy - half))
+            cx2 = cx1 + int(round(side))
+            cy2 = cy1 + int(round(side))
+
+            # 越界处理（保持 1:1，贴边时整体平移）
+            if cx1 < 0:
+                cx2 -= cx1
+                cx1 = 0
+            if cy1 < 0:
+                cy2 -= cy1
+                cy1 = 0
+            if cx2 > image_width:
+                cx1 -= cx2 - image_width
+                cx2 = image_width
+            if cy2 > image_height:
+                cy1 -= cy2 - image_height
+                cy2 = image_height
+            cx1 = max(0, min(cx1, image_width))
+            cy1 = max(0, min(cy1, image_height))
+            cx2 = max(0, min(cx2, image_width))
+            cy2 = max(0, min(cy2, image_height))
+
             v.box = [cx1, cy1, cx2, cy2]
             crop = frame[cy1:cy2, cx1:cx2]
             if crop.size == 0:
                 confirmed.append(v)
                 continue
+            if algo_code == "32":
+                name = "sleep/" + str(time.time()) + ".jpg"
+                cv2.imwrite(name, crop)
+
+            # 反光衣：送入 VL 前先做对比度增强，凸显银灰色反光条
+            # if algo_code == "10":
+            #     crop = _enhance_contrast(crop)
 
             t_start = time.time()
             result_str = client.analyze_image(
@@ -136,9 +196,7 @@ def vl_analyze_for_task(
             t_end = time.time()
             logger.info(
                 f"VL 分析完成 | algo={algo_code} | idx={idx} | label={v.label} | "
-                f"crop=({cx1},{cy1},{cx2},{cy2}) | 耗时={(t_end - t_start) * 1000:.1f}ms"
-            )
-
+                f"crop=({cx1},{cy1},{cx2},{cy2}) | 耗时={(t_end - t_start) * 1000:.1f}ms, result={result_str}")
             result_json = json.loads(result_str)
             if result_json.get("has_violation", False):
                 logger.warning(f"VL 确认违规 | algo={algo_code} | idx={idx} | label={v.label}")

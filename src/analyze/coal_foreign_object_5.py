@@ -5,10 +5,10 @@ from utils.obj import Box
 from utils.filter import score_filter, label_filter, area_filter
 from utils.logger import setup_logger
 
-logger = setup_logger("coal_foreign_object")
+logger = setup_logger("coal_foreign_object_5")
 
 
-class CoalForeignObjectDetector:
+class CoalForeignObjectDetector5:
     """
     煤流异物检测器（算法码 50）。
 

@@ -62,14 +62,34 @@ class ZoneDetector:
             return []
 
         person_boxes = label_filter(predictions, ['person'])
+        person_boxes = [p for p in person_boxes if p.source == "SAM3"]
         person_boxes = area_filter(person_boxes, 1000.0)
         person_boxes = score_filter(person_boxes, 0.8)
 
+        leg_boxes = label_filter(predictions, ['person leg'])
+        leg_boxes = score_filter(leg_boxes, 0.35)
+
+        leg_person_boxes = []
         for person in person_boxes:
+            for leg in leg_boxes:
+                if person.iom(leg) > 0.8:
+                    leg_person_boxes.append(person)
+                    break
+
+        for person in leg_person_boxes:
             for fence in fence_polygons:
-                if person.fence_iom(fence) > 0.5:
+                fence_person = person.cut_box('top', 0.667) 
+                if fence_person.fence_iom(fence) > 0.1:
                     result.append(person)
                     break
+        
+        '''
+        for person in person_boxes:
+            for fence in fence_polygons:
+                if person.fence_iom(fence) > 0.05:
+                    result.append(person)
+                    break
+        '''
 
         # 只有指定了设备ID才保存历史状态，便于后续做时序分析（如连续多帧确认、火焰跳动检测等）
         # if device_id:

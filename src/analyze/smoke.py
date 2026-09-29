@@ -16,32 +16,32 @@ class SmokingDetector:
     检测目标：cigarette、person、face。
     逻辑：
       1. 过滤出有效的人（person）。
-      2. 找出与人（person）有空间重叠的 face（排除孤立的脸）。
-      3. 只有当香烟（cigarette）与上述有效 face 相交时，才判定为抽烟违章；
-         与 head、hand 相交都不算。
-      4. 返回触发违章的香烟 Box 列表。
+      2. 找出与人（person）有空间重叠的 head（排除孤立的头）。
+      3. 只有当香烟（cigarette）与上述有效 head 相交时，才判定为抽烟违章；
+         与 hand 相交都不算。
+      4. 返回触发违章的 face（头）Box 列表。
     """
 
     def __init__(
         self,
         person_min_score: float = 0.5,
         person_min_area: float = 1000.0,
-        face_min_score: float = 0.5,
-        cigarette_min_score: float = 0.7,
-        min_iom: float = 0.0,
+        head_min_score: float = 0.6,
+        cigarette_min_score: float = 0.6,
+        min_iom: float = 0.3,
         alarm_on_head: bool = True,
     ):
         """
         :param person_min_score: person 最低置信度
         :param person_min_area: person 最小面积（像素）
-        :param face_min_score: face 最低置信度
+        :param head_min_score: head 最低置信度
         :param cigarette_min_score: cigarette 最低置信度
         :param min_iom: 判定两个框“相交”的最小 IoM（0 表示只要接触就相交）
-        :param alarm_on_head: 是否允许“香烟与 face 相交”触发告警；默认 True
+        :param alarm_on_head: 是否允许“香烟与 head 相交”触发告警；默认 True
         """
         self.person_min_score = person_min_score
         self.person_min_area = person_min_area
-        self.face_min_score = face_min_score
+        self.head_min_score = head_min_score
         self.cigarette_min_score = cigarette_min_score
         self.min_iom = min_iom
         self.alarm_on_head = alarm_on_head
@@ -85,7 +85,7 @@ class SmokingDetector:
         :param device_id: 设备 ID，用于隔离不同设备的历史状态
         :param image_width: 预留参数，保持接口统一
         :param image_height: 预留参数，保持接口统一
-        :return: 触发抽烟违章的 cigarette Box 列表
+        :return: 触发抽烟违章的 head（头）Box 列表
         """
         # 1. 按标签过滤
         person_boxes = label_filter(predictions, ["person"])
@@ -93,37 +93,34 @@ class SmokingDetector:
         person_boxes = area_filter(person_boxes, self.person_min_area)
         person_boxes = nms_filter(person_boxes, 0.5)
 
-        face_boxes = label_filter(predictions, ["face"])
-        face_boxes = score_filter(face_boxes, self.face_min_score)
+        head_boxes = label_filter(predictions, ["face"])
+        head_boxes = score_filter(head_boxes, self.head_min_score)
 
         cigarette_boxes = label_filter(predictions, ["cigarette"])
+        cigarette_boxes = area_filter(cigarette_boxes, 10 * 10)
         cigarette_boxes = score_filter(cigarette_boxes, self.cigarette_min_score)
         cigarette_boxes = nms_filter(cigarette_boxes, 0.5)
 
-        # 2. 找出与人相交的 face（先排除孤立的脸）
-        valid_faces = self._find_overlapped(face_boxes, person_boxes, self.min_iom)
+        # 2. 找出与人相交的 head（先排除孤立的头）
+        valid_heads = self._find_overlapped(head_boxes, person_boxes, self.min_iom)
 
-        # 3. 判断香烟是否与有效 face 相交（与 head、hand 相交都不算）
+        # 3. 判断香烟是否与有效 head 相交（与 hand 相交都不算），
+        #    命中时返回该 head（头）的框
         result = []
         seen_ids = set()
-        for cigarette in cigarette_boxes:
-            cid = id(cigarette)
-            if cid in seen_ids:
+        for head in valid_heads:
+            hid = id(head)
+            if hid in seen_ids:
                 continue
 
-            alarm = False
-
-            # 3.1 香烟与“有效脸”相交才判定为抽烟
-            if self.alarm_on_head and self._any_overlap(cigarette, valid_faces, self.min_iom):
-                alarm = True
-
-            if alarm:
-                result.append(cigarette)
-                seen_ids.add(cid)
+            # 3.1 存在任一香烟与“有效头”相交才判定为抽烟
+            if self.alarm_on_head and self._any_overlap(head, cigarette_boxes, 0.0001):
+                result.append(head)
+                seen_ids.add(hid)
 
         if result:
             logger.warning(
-                f"[device={device_id}] 抽烟违章触发 | 有效脸={len(valid_faces)}, "
-                f"违章香烟数={len(result)}"
+                f"[device={device_id}] 抽烟违章触发 | 有效头={len(valid_heads)}, "
+                f"违章头部数={len(result)}"
             )
         return result

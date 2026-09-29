@@ -59,15 +59,15 @@ class CarDetector:
             polys = []
             for cnt in contours:
                 # 过滤掉噪点
-                if cv2.contourArea(cnt) < 10:
-                    continue
+                # if cv2.contourArea(cnt) < 50:
+                #     continue
 
                 # reshape 保证形状为 (N, 2)，避免 squeeze 在 N 较小时产生标量/一维数组
                 contour = cnt.reshape(-1, 2)
                 if len(contour) >= 3:
                     poly = Polygon(contour)
                     # 修复可能自交的无效多边形
-                    poly = poly.buffer(0) if not poly.is_valid else poly
+                    # poly = poly.buffer(0) if not poly.is_valid else poly
                     polys.append(poly)
 
             if not polys:
@@ -85,6 +85,24 @@ class CarDetector:
         except Exception as e:
             logger.warning(f"解析多边形失败: {e}")
             return None
+    
+    @staticmethod
+    def _draw_polygons(
+        image: np.ndarray,
+        belt_poly: Polygon,
+    ):
+        """在图像上绘制围栏和皮带多边形，并显示越界比例。"""
+        img_copy = image.copy()
+        # 绘制围栏（绿色）
+
+        # 绘制皮带多边形（蓝色或红色）
+        if belt_poly is not None:
+            pts = np.array(belt_poly.exterior.coords, dtype=np.int32).reshape((-1, 1, 2))
+            color=(255,255,0)
+            cv2.fillPoly(img_copy, [pts], color=color, lineType=cv2.LINE_AA)
+            cv2.polylines(img_copy, [pts], isClosed=True, color=(255,255,255), thickness=1)
+        return img_copy
+
 
     @staticmethod
     def _compute_image_size(predictions: list[Box], image_width: int, image_height: int) -> tuple[int, int]:
@@ -105,7 +123,8 @@ class CarDetector:
         fences=None,
         device_id: str = "",
         image_width: int = 0,
-        image_height: int = 0
+        image_height: int = 0,
+        frame: np.ndarray = None, 
     ) -> list[Box]:
         """
         检测人员是否在围栏内的货车车厢中。
@@ -149,20 +168,24 @@ class CarDetector:
             return []
 
         # 按类别过滤
-        car_boxes = label_filter(predictions, ['truck bed'])
+        car_boxes = label_filter(predictions, ['dump body'])
         person_boxes = label_filter(predictions, ['person'])
+        person_boxes = [p for p in person_boxes if p.source == "SAM3"]
         leg_boxes = label_filter(predictions, ['leg'])
 
         # 基础过滤
         car_boxes = score_filter(car_boxes, 0.5)
         person_boxes = score_filter(person_boxes, 0.5)
-        leg_boxes = score_filter(leg_boxes, 0.5)
+        # leg_boxes = score_filter(leg_boxes, 0.4)
+
+        # return car_boxes
 
         # 解析车辆 mask，筛选围栏内的 truck bed
         valid_truck_beds = []
         for car in car_boxes:
             car_poly = self._mask_to_polygon(car, image_width, image_height, use_convex_hull=True)
             if car_poly is None:
+                logger.info("car poly is none")
                 continue
 
             for fence in fence_polys:
@@ -171,11 +194,13 @@ class CarDetector:
                 inter_area = car_poly.intersection(fence).area
                 overlap_ratio = inter_area / car_poly.area if car_poly.area > 0 else 0.0
                 if overlap_ratio > 0.7:
+                    logger.info("find truck in poly")
                     valid_truck_beds.append({'box': car, 'poly': car_poly})
                     break  # 命中任一围栏即视为有效
 
         # 围栏内没有 truck bed，不触发后续判定
         if not valid_truck_beds:
+            logger.info("can not find truck in poly")
             return []
 
         # 解析人员 mask
@@ -199,17 +224,20 @@ class CarDetector:
             p_box = p_obj['box']
 
             # 只保留完整的人：要求存在 leg 与其高度重叠
-            is_full_person = False
+            is_full_person = False 
             for leg_obj in legs_detected:
                 leg_poly = leg_obj['poly']
                 if not p_poly.intersects(leg_poly):
                     continue
                 inter_area = p_poly.intersection(leg_poly).area
                 leg_overlap_ioa = inter_area / leg_poly.area if leg_poly.area > 0 else 0.0
-                if leg_overlap_ioa >= 0.9:
+                logger.info(leg_overlap_ioa)
+                if leg_overlap_ioa >= 0.5:
+                    logger.info("find fully person")
                     is_full_person = True
                     break
             if not is_full_person:
+                logger.info("no fully person")
                 continue
 
             # 判断该人员是否在任一有效 truck bed 内
@@ -217,16 +245,22 @@ class CarDetector:
             for tb_obj in valid_truck_beds:
                 tb_poly = tb_obj['poly']
                 if not p_poly.intersects(tb_poly):
+                    logger.info("not in truck bed")
                     continue
                 inter_area = p_poly.intersection(tb_poly).area
                 overlap_ioa = inter_area / p_poly.area if p_poly.area > 0 else 0.0
-                if overlap_ioa > 0.6:
+                if overlap_ioa > 0.7:
                     logger.info(
                         f"[device={device_id}] 发现违规：person 在 truck bed 内部，"
                         f"重合度 {overlap_ioa:.2%}"
                     )
                     is_in_truck_bed = True
                     break
+                else:
+                    logger.info(
+                        f"[device={device_id}] 未发现违规：person 在 truck bed 内部，"
+                        f"重合度 {overlap_ioa:.2%}"
+                    )
 
             if is_in_truck_bed:
                 final_violators.append(p_box)
@@ -236,7 +270,8 @@ class CarDetector:
         #     self._history[device_id] = final_violators
 
         # 返回违规人员 + 相关 truck bed，方便前端画框
+        # if final_violators:
+        #     return final_violators + [tb['box'] for tb in valid_truck_beds]
         if final_violators:
-            return final_violators + [tb['box'] for tb in valid_truck_beds]
-
+            return final_violators
         return []

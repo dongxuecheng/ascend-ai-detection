@@ -1,4 +1,4 @@
-### 单人作业/单人滞留检测
+### 无监护人作业
 import time
 import threading
 from typing import List, Dict, Optional
@@ -14,29 +14,24 @@ logger = setup_logger("single")
 # 红帽子相关标签：佩戴红帽子的人员通常具有管理/监护身份，不纳入单人作业统计
 RED_HAT_LABELS = ["red hat", "red helmet", "red hard hat", "red cap"]
 
-ORANGE_UPPER_GARMENT = ["orange upper garmenT"]
 
-class SingleDetector:
+class UnsupervisedDetector:
     """
-    单人检测器：在指定时间窗口内，如果连续帧都只检测到 1 个人，则判定为违章。
-
-    典型场景：
-      - 高危作业区域要求“双人作业”，若只有 1 人则告警；
-      - 受限空间/值班岗位单人滞留检测。
+    无监护人检测器：在指定时间窗口内，如果连续帧都只检测到 大于等于2人且没有佩戴红帽子或反光背心的人员，则判定为违章。
 
     状态按 device_id 隔离，支持多路视频并发调用。
     """
 
     def __init__(
         self,
-        duration_seconds: float = 300,
+        duration_seconds: float = 120,
         min_score: float = 0.8,
         min_area: float = 1000.0,
         nms_iou: float = 0.5,
         latch: bool = True,
     ):
         """
-        :param duration_seconds: 连续只检测到 1 人的持续时间阈值（秒），达到后触发违章
+        :param duration_seconds: 连续只检测到 大于 2 人的持续时间阈值（秒），达到后触发违章
         :param min_score: person 框最低置信度
         :param min_area: person 框最小面积（像素）
         :param nms_iou: 对重叠 person 框做 NMS 的 IoU 阈值
@@ -79,13 +74,19 @@ class SingleDetector:
                 return True
         return False
 
-    def _is_orange_upper_garment_person(self, person: Box, predictions: List[Box]) -> bool:
-        orange_upper_garment = [b for b in predictions if b.label in ORANGE_UPPER_GARMENT]
-        orange_upper_garment = score_filter(orange_upper_garment, 0.5)
-        if not orange_upper_garment:
+    def is_vest_person(self, person: Box, predictions: List[Box]) -> bool:
+        """
+        判断某个人员框是否与反光背心目标存在明显重叠。
+        用于把佩戴反光背心的管理人员/监护人排除在单人作业统计之外。
+        """
+        vest_labels = ["reflective vest", "safety vest", "high visibility vest"]
+        vests = [b for b in predictions if b.label in vest_labels]
+        vests = score_filter(vests, 0.5)
+        if not vests:
             return False
-        for garment in orange_upper_garment:
-            if person.iom(garment) > 0.5:
+        for vest in vests:
+            # 反光背心应位于人框躯干区域，用 IoM 判断重叠即可
+            if person.iom(vest) > 0.3:
                 return True
         return False
 
@@ -151,10 +152,10 @@ class SingleDetector:
         with self._lock:
             state = self._states.get(key)
 
-            # 只要当前帧人数不是 1，就重置计时/触发状态。
+            # 只要当前帧人数小于 2，就重置计时/触发状态。
             # 即使 YOLO/SAM3 当前帧没有检测到人（count == 0），也会进入此分支重置状态，
             # 确保时间累计类逻辑在空输入时仍然被正确执行一遍。
-            if count != 1:
+            if count < 2:
                 self._states[key] = {"start_time": None, "triggered": False}
                 return []
 
@@ -163,21 +164,22 @@ class SingleDetector:
                 self._states[key] = {"start_time": now, "triggered": False}
                 return []
 
+            for person in persons:
+                if self._is_red_hat_person(person, predictions):
+                    logger.info(
+                        f"[device={device_id}] 人员佩戴红帽子，跳过无监护人作业计时"
+                    )
+                    self._states[key] = {"start_time": None, "triggered": False}
+                    return []
+                
             # 唯一人员若是红帽子（管理/监护人员），不判定为单人作业
-            if self._is_red_hat_person(persons[0], predictions):
-                logger.info(
-                    f"[device={device_id}] 唯一人员佩戴红帽子，跳过单人作业计时"
-                )
-                self._states[key] = {"start_time": None, "triggered": False}
-                return []
-            
-            if self._is_orange_upper_garment_person(persons[0], predictions):
-                logger.info(
-                    f"[device={device_id}] 唯一人员穿着橙色衣服，跳过单人作业计时"
-                )
-                self._states[key] = {"start_time": None, "triggered": False}
-                return []
-
+            for person in persons:
+                if self.is_vest_person(person, predictions):
+                    logger.info(
+                        f"[device={device_id}] 人员佩戴反光背心，跳过无监护人作业计时"
+                    )
+                    self._states[key] = {"start_time": None, "triggered": False}
+                    return []
 
             elapsed = now - state["start_time"]
             if elapsed < self.duration_seconds:
@@ -190,14 +192,13 @@ class SingleDetector:
 
             # 达到阈值，触发违章
             state["triggered"] = True
-            person = persons[0]
-            violation = Box(
-                label="single_person",
+            violations = [ Box(
+                label="unsupervised",
                 score=person.score,
                 box=list(person.box),
-            )
+            ) for person in persons]
             logger.warning(
-                f"[device={device_id}] 单人违章触发 | 持续时间={elapsed:.1f}s, "
-                f"box={violation.box}, score={violation.score:.3f}"
+                f"[device={device_id}] 无监护人违章触发 | 持续时间={elapsed:.1f}s"
             )
-            return [violation]
+            return violations
+

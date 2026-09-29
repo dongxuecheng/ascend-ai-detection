@@ -168,49 +168,17 @@ class BeltDeviationDetector:
         return belt_poly, float(belt_poly.area)
 
     @staticmethod
-    def _iter_polygon_parts(geom):
-        """
-        把 Polygon / MultiPolygon / GeometryCollection 统一展开为单个 Polygon 迭代器。
-
-        `unary_union` 合并多个互不相连的轮廓时会返回 MultiPolygon，
-        而 MultiPolygon 没有 `exterior` 属性，必须先拆分再访问。
-        """
-        if geom is None or getattr(geom, "is_empty", True):
-            return
-        if hasattr(geom, "geoms"):
-            for sub in geom.geoms:
-                yield from BeltDeviationDetector._iter_polygon_parts(sub)
-        elif hasattr(geom, "exterior"):
-            yield geom
-
-    @staticmethod
     def _polygon_to_mask(poly, image_width: int, image_height: int) -> np.ndarray:
-        """把 Shapely Polygon / MultiPolygon 光栅化为与图像同尺寸的二值 mask，便于上层直接画 mask。"""
+        """把 Shapely Polygon 光栅化为与图像同尺寸的二值 mask，便于上层直接画 mask。"""
         mask = np.zeros((image_height, image_width), dtype=np.uint8)
-        for part in BeltDeviationDetector._iter_polygon_parts(poly):
-            ext = np.array(part.exterior.coords, dtype=np.int32).reshape((-1, 1, 2))
-            if len(ext) < 3:
-                continue
-            cv2.fillPoly(mask, [ext], 1)
-            for interior in part.interiors:
-                hole = np.array(interior.coords, dtype=np.int32).reshape((-1, 1, 2))
-                if len(hole) < 3:
-                    continue
-                cv2.fillPoly(mask, [hole], 0)
+        if poly is None or getattr(poly, "is_empty", True):
+            return mask
+        ext = np.array(poly.exterior.coords, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.fillPoly(mask, [ext], 1)
+        for interior in poly.interiors:
+            hole = np.array(interior.coords, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.fillPoly(mask, [hole], 0)
         return mask
-
-    # @staticmethod
-    # def _polygon_to_mask(poly, image_width: int, image_height: int) -> np.ndarray:
-    #     """把 Shapely Polygon 光栅化为与图像同尺寸的二值 mask，便于上层直接画 mask。"""
-    #     mask = np.zeros((image_height, image_width), dtype=np.uint8)
-    #     if poly is None or getattr(poly, "is_empty", True):
-    #         return mask
-    #     ext = np.array(poly.exterior.coords, dtype=np.int32).reshape((-1, 1, 2))
-    #     cv2.fillPoly(mask, [ext], 1)
-    #     for interior in poly.interiors:
-    #         hole = np.array(interior.coords, dtype=np.int32).reshape((-1, 1, 2))
-    #         cv2.fillPoly(mask, [hole], 0)
-    #     return mask
 
     @staticmethod
     def _draw_polygons(
@@ -339,4 +307,3 @@ class BeltDeviationDetector:
                     used_ids.add(bid)
                     break  # 命中任一围栏即报出
         return result
-

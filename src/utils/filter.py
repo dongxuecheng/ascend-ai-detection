@@ -46,17 +46,19 @@ def aspect_ratio_filter(boxes: list, min_ratio: float = 0.3, max_ratio: float = 
     return result
 
 
-def edge_filter(boxes: list, img_width: int, img_height: int, margin: int = 10) -> list:
+def edge_filter(boxes: list, img_width: int, img_height: int, margin_ratio: float = 0.05) -> list:
     """
     过滤掉紧贴图像边缘的框（通常是误识别或截断目标）
     :param img_width: 图像宽度
     :param img_height: 图像高度
-    :param margin: 距离边缘的最小留白（像素），默认 10
+    :param margin_ratio: 距离边缘的最小留白（像素）比例，默认 0.05
     """
+    margin_height = int(img_height * margin_ratio)
+    margin_width  = int(img_width * margin_ratio)
     result = []
     for box in boxes:
         x1, y1, x2, y2 = box.box
-        if x1 < margin or y1 < margin or x2 > (img_width - margin) or y2 > (img_height - margin):
+        if x1 < margin_width or y1 < margin_height or x2 > (img_width - margin_width) or y2 > (img_height - margin_height):
             continue
         result.append(box)
     return result

@@ -11,6 +11,7 @@ from utils.filter import label_filter, score_filter
 from analyze.helmet import HelmetDetector
 from analyze.glove import GloveDetector
 from analyze.zone import ZoneDetector
+from analyze.car_zone import CarZoneDetector
 from analyze.skin import ExposedArmLegDetector
 from analyze.shield import ShieldDetector
 from analyze.vest import VestDetector
@@ -27,7 +28,11 @@ from analyze.move_phone import MoveUsePhoneDetector
 from analyze.height_work import HeightWorkDetector
 from analyze.coal import CoalDetector
 from analyze.coal_foreign_object import CoalForeignObjectDetector
+from analyze.coal_foreign_object_5 import CoalForeignObjectDetector5
 from analyze.empty_truck import EmptyTruckDetector
+from analyze.person_approaching_moving_vehicle import PersonApproachingMovingVehicleDetector
+from analyze.unsupervised_person import UnsupervisedDetector
+
 
 logger = setup_logger("analyzer")
 
@@ -36,6 +41,7 @@ _DETECTOR_CLASSES = {
     "HelmetDetector": HelmetDetector,
     "GloveDetector": GloveDetector,
     "ZoneDetector": ZoneDetector,
+    "CarZoneDetector": CarZoneDetector,
     "ExposedArmLegDetector": ExposedArmLegDetector,
     "ShieldDetector": ShieldDetector,
     "VestDetector": VestDetector,
@@ -52,7 +58,10 @@ _DETECTOR_CLASSES = {
     "HeightWorkDetector": HeightWorkDetector,
     "CoalDetector": CoalDetector,
     "CoalForeignObjectDetector": CoalForeignObjectDetector,
+    "CoalForeignObjectDetector5": CoalForeignObjectDetector5,
     "EmptyTruckDetector": EmptyTruckDetector,
+    "PersonApproachingMovingVehicleDetector": PersonApproachingMovingVehicleDetector,
+    "UnsupervisedDetector": UnsupervisedDetector,
 }
 
 # 全局单例实例（非线程隔离的检测器共享使用）
@@ -160,10 +169,10 @@ def analyze_for_task(
                     detect_kwargs["frame"] = frame
                 detector_result = detector.detect(boxes, **detect_kwargs)
                 if len(boxes) > 0 or frame is not None:
-                    logger.info(f"[device={device_id}] analyze_for_task 检测器 {detector.__class__.__name__} 返回 {len(detector_result)} 个违规目标")
+                    logger.info(f"[device={device_id}] task_name={task_name} analyze_for_task 检测器 {detector.__class__.__name__} 返回 {len(detector_result)} 个违规目标")
                 result.extend(detector_result)
             except Exception as e:
-                logger.error(f"[device={device_id}] analyze_for_task 检测器 {detector.__class__.__name__} 运行出错: {e}")
+                logger.error(f"[device={device_id}] task_name={task_name} analyze_for_task 检测器 {detector.__class__.__name__} 运行出错: {e}")
 
         for r in result:
             logger.info(f"[device={device_id}] analyze_for_task 违规目标: {r}")

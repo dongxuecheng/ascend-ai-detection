@@ -64,6 +64,7 @@ def _draw_label_top_right(
         label_y = 0
 
     # 绘制背景
+    '''
     cv2.rectangle(
         canvas,
         (label_x, label_y),
@@ -71,6 +72,7 @@ def _draw_label_top_right(
         color,
         -1,
     )
+    '''
 
     # 绘制文字（白色）
     text_x = label_x + PADDING_X
@@ -129,9 +131,21 @@ def render_alert_frame(
                     color,
                 )
 
-    # 违规框（红色）
+    # 违规框（红色），如有 mask 则先叠加半透明红色高亮
     if draw_violation_boxes and violations:
+        img_h, img_w = canvas.shape[:2]
         for b in violations:
+            '''
+            try:
+                if b.label == "conveyor belt":
+                    mask = b.compute_mask_array(img_w, img_h)
+                    if mask is not None and mask.any():
+                        overlay = canvas.copy()
+                        overlay[mask > 0] = VIOLATION_COLOR
+                        cv2.addWeighted(overlay, 0.45, canvas, 0.55, 0, canvas)
+            except Exception:
+                pass
+            '''
             x1, y1, x2, y2 = map(int, b.box)
             cv2.rectangle(canvas, (x1, y1), (x2, y2), VIOLATION_COLOR, 3)
             # _draw_label_top_right(

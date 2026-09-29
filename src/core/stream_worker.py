@@ -1,4 +1,5 @@
 import os
+import cv2
 import threading
 import time
 from typing import List, Dict, Optional, Tuple
@@ -55,7 +56,7 @@ def _get_yolo_client(model_name: str) -> Optional[YOLOTritonFast]:
                 output_name=model_cfg.get("output_name", "output0"),
                 input_size=model_cfg.get("input_size", 640),
                 output_format=model_cfg.get("output_format", "yolo_v8_v11"),
-                conf_thresh=model_cfg.get("conf_thresh", 0.5),
+                conf_thresh=model_cfg.get("conf_thresh", 0.3),
                 iou_thresh=model_cfg.get("iou_thresh", 0.45),
                 protocol="shm",
                 warmup=True,
@@ -403,6 +404,9 @@ class StreamWorker(threading.Thread):
                     self._stream_id, blocking=True, timeout_ms=5000
                 )
                 if frame is None:
+                    # single image debug
+                    # import cv2
+                    # frame = cv2.imread("2.jpg")
                     self._consecutive_read_failures += 1
                     now = time.time()
                     no_frame_duration = now - self._last_frame_at
@@ -576,7 +580,7 @@ class StreamWorker(threading.Thread):
                     logger.info(f"SAM3 请求 | URL={url} | Prompts: {merged_prompts}, return_mask={return_mask}")
                     boxes = call_sam3(
                         frame, merged_prompts,
-                        confidence_threshold=0.4,
+                        confidence_threshold=0.3,
                         return_mask=return_mask,
                         url=url,
                     )
@@ -646,6 +650,7 @@ class StreamWorker(threading.Thread):
                                 # 即使没有违规，也记录分析时间，避免频繁进入 ready 状态
                                 self.task_last_run[task.id] = now
                                 continue
+                                
 
                             # 分类器二次确认（如吸烟检测后调用 resnet_smoke 分类模型）
                             violations = classify_for_task(

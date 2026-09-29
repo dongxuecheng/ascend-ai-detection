@@ -293,6 +293,32 @@ class BaseConfig(BaseModel):
             "cooldown_seconds": float(_item.get("cooldown_seconds", 30.0)),
             "iou_thresh": float(_item.get("iou_thresh", 0.5)),
         }
+    
+        # 本地图片测试配置（tests/local/test_local_image.py 使用）。
+    # 结构：{default_image_dir: str, enable_classifier: bool, enable_vl: bool,
+    #        algorithms: [{code, image?, fence?, mode?}]}
+    _test_local_raw: dict = _ALGO_CONFIG.get("test_local", {}) or {}
+    TEST_LOCAL_DEFAULT_IMAGE_DIR: str = str(
+        _test_local_raw.get("default_image_dir", "./asserts/images")
+    )
+    # 本地测试时是否启用分类器 / VL 大模型二次确认（默认为 True）
+    TEST_LOCAL_ENABLE_CLASSIFIER: bool = bool(
+        _test_local_raw.get("enable_classifier", True)
+    )
+    TEST_LOCAL_ENABLE_VL: bool = bool(
+        _test_local_raw.get("enable_vl", True)
+    )
+    TEST_LOCAL_ALGORITHMS: Dict[str, dict] = {}
+    for _item in _test_local_raw.get("algorithms", []):
+        if not isinstance(_item, dict) or "code" not in _item:
+            continue
+        _t_code = str(_item["code"])
+        TEST_LOCAL_ALGORITHMS[_t_code] = {
+            "image": str(_item.get("image", "") or ""),
+            "fence": str(_item.get("fence", "") or ""),
+            "mode": str(_item.get("mode", "") or ""),
+        }
+
 
 def get_config(env: str | None = None) -> BaseConfig:
     """

@@ -28,7 +28,7 @@ DEFAULT_CROP_CONFIG = {
 def call_sam3(
     frame: np.ndarray,
     prompts: List[str],
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = 0.3,
     return_mask: bool = False,
     pre_detect_labels: Optional[List[str]] = None,
     merge_results: bool = True,
@@ -50,6 +50,8 @@ def call_sam3(
     """
     if not prompts:
         return []
+    logger.info(prompts)
+    logger.info(return_mask)
 
     try:
         # 1. 图片编码为 base64 JPEG

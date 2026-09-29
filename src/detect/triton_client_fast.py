@@ -352,5 +352,6 @@ class YOLOTritonFast:
                 score=float(scores[i]),
                 box=[max(0.0, x1), max(0.0, y1), max(0.0, x2), max(0.0, y2)],
                 mask=None,
+                source="YOLO",
             ))
         return result

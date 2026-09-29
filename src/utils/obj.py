@@ -19,12 +19,13 @@ class Box(object):
     }
     _DEFAULT_POS = 'bottom_center'   # 默认位置名
 
-    def __init__(self, label: str, score: float, box: list, mask: dict | None = None, mask_array: np.ndarray | None = None):
+    def __init__(self, label: str, score: float, box: list, mask: dict | None = None, mask_array: np.ndarray | None = None, source="SAM3"):
         self.label = label
         self.score = score
         self.box = box
         self.mask = mask
         self.mask_array = mask_array  # 延迟计算的二值掩码数组
+        self.source = source
 
     def compute_mask_array(self, image_width: int, image_height: int) -> np.ndarray | None:
         if self.mask_array is not None:

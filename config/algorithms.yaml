@@ -1,5 +1,6 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['0', '8', '10', '14', '32', '33', '34', '38', '49', '50', '52', '53', '56', '57', '59']
+supported_codes: ['0', '8', '10', '14', '32', '33', '34', '38', '49', '50', '51', '52', '53', '56', '58', '59', '60', '61', '62']
+# supported_codes: ['10']
 
 # 可用的 GPU 编码（GPU ID）列表。
 # StreamWorker 创建时会按轮询方式依次使用列表中的 GPU，实现多路流的负载均衡。
@@ -33,6 +34,8 @@ code_descriptions:
   descriptions: 堆煤
 - code: '50'
   descriptions: 煤流异物检测
+- code: '51'
+  descriptions: 5号皮带后煤流异物检测
 - code: '52'
   descriptions: 车辆检测
 - code: '53'
@@ -49,18 +52,22 @@ code_descriptions:
   descriptions: 安全带
 - code: '59'
   descriptions: 空车检查
+- code: '60'
+  descriptions: 人员靠近移动车辆 
+- code: '61'
+  descriptions: 现场无监护人作业
+- code: '62'
+  descriptions: 车辆距离卸煤沟两米内
 sam3_prompts:
 - code: '0'
-  prompts: [head, helmet, hard hat, person]
+  prompts: [head, helmet, hard hat, hat, person, umbrella, driver]
   return_mask: false
 - code: '8'
-  prompts: [person]
+  prompts: [person, person leg]
   return_mask: false
 - code: '10'
-  prompts: [person, clothes, work clothes, clothing, reflective vest, reflective clothing,
-    high-visibility strip, high-vis strip, vest, orange clothes, reflective strip, uniform,
-    red hat, red helmet, red hard hat]
-  return_mask: false
+  prompts: [person, uniform, orange upper garment, upper garment, pants, vest, high-visibility stripe, high-vis stripe, reflective stripe, linear reflective stripe, light-grey reflective line on clothing, reflective piping, reflective trim, red hat, red helmet, red hard hat]
+  return_mask: true
 - code: '14'
   prompts: [cigarette, person, face]
   return_mask: false
@@ -89,10 +96,13 @@ sam3_prompts:
   prompts: [coal pile, coal]
   return_mask: true
 - code: '50'
-  prompts: [conveyor belt]
+  prompts: [plastic bag, wooden stick]
+  return_mask: false
+- code: '51'
+  prompts: [light-grey rock, plastic bag, wooden stick]
   return_mask: false
 - code: '52'
-  prompts: [person, leg, truck bed]
+  prompts: [person, leg, dump body]
   return_mask: true
 - code: '53'
   prompts: [person, fire, flame, extinguisher, fire extinguisher, fire extinguisher cabinet]
@@ -112,10 +122,20 @@ sam3_prompts:
 #   return_mask: false
 - code: '58'
   prompts: [person-on-ladder, person-on-scaffolding, ladder, scaffolding, safety harness,
-    harness]
+    harness, safety strap]
   return_mask: true
 - code: '59'
-  prompts: [truck bed, dark coal residue]
+  # prompts: [truck bed, dark coal residue]
+  prompts: [truck, dark coal residue, coal residue]
+  return_mask: true
+- code: '60'
+  prompts: [truck, person, driver]
+  return_mask: false
+- code: '61'
+  prompts: [vest, person]
+  return_mask: true
+- code: '62'
+  prompts: [truck]
   return_mask: true
 - code: '200'
   prompts: [person, hand, glove, face shield, face]
@@ -128,33 +148,42 @@ sam3_prompts:
 # 同一 URL 的算法码放在同一个 group 中；未在 groups 中配置的算法码将回退到 config.SAM3_URL_OBJ。
 sam3_url_groups:
   - url: 'http://192.168.100.75:18002/predict'
-    codes: ['8', '33', '34', '52', '53', '38', '56', '49', '59', '50']
+    codes: ['8', '32', '33', '34', '52', '53', '38', '56', '49', '59', '50']
   - url: 'http://192.168.100.75:18002/predict-person-about-small-object'
-    codes: ['0', '14', '58']
+    codes: ['0', '14', '58', '10']
 
 fence_algorithms:
 - {code: '8'}
 - {code: '49'}
 - {code: '33'}
+- {code: '50'}
+- {code: '51'}
+- {code: '52'}
+- {code: '58'}
+- {code: '62'}
 
 use_yolo_boxes:
 - {code: '200'}
-- {code: '50'}
+# - {code: '50'}
 - {code: '57'}
 
 # YOLO 预检测配置：模型详细参数已迁移到 config/models.yaml
 yolo_pre_detect:
 - {code: '0', yolo26_ensemble: [person]}
+- {code: '10', yolo26_ensemble: [person]}
 - {code: '8', yolo26_ensemble: [person]}
 - {code: '14', yolo26_ensemble: [person]}
+- {code: '32', yolo26_ensemble: [person]}
 - {code: '34', yolo26_ensemble: [person]}
-- {code: '38', yolo26_ensemble: [person]}
+# - {code: '38', yolo26_ensemble: [person]}
 - {code: '57', yolo26_ensemble: [person]}
 - {code: '52', yolo26_ensemble: [person]}
 - {code: '53', yolo26_ensemble: [person]}
 - {code: '56', yolo26_ensemble: [person]}
 - {code: '58', yolo26_ensemble: [person]}
-- {code: '50', yolov5_ensemble: [dakuai]}
+- {code: '60', yolo26_ensemble: [person]}
+- {code: '61', yolo26_ensemble: [person]}
+# - {code: '50', yolov5_ensemble: [dakuai]}
 
 
 algorithm_detectors:
@@ -172,8 +201,12 @@ algorithm_detectors:
 - {code: '57', detectors: [MoveUsePhoneDetector]}
 - {code: '49', detectors: [CoalDetector]}
 - {code: '50', detectors: [CoalForeignObjectDetector]}
+- {code: '51', detectors: [CoalForeignObjectDetector5]}
 - {code: '59', detectors: [EmptyTruckDetector]}
 - {code: '58', detectors: [HeightWorkDetector]}
+- {code: '60', detectors: [PersonApproachingMovingVehicleDetector]}
+- {code: '61', detectors: [UnsupervisedDetector]}
+- {code: '62', detectors: [CarZoneDetector]}
 - {code: '200', detectors: [GloveDetector, ShieldDetector]}
 - {code: '201', detectors: [HelmetDetector, ExposedArmLegDetector, GloveDetector]}
 - {code: '204', detectors: [ZoneDetector]}
@@ -184,8 +217,10 @@ algorithm_detectors:
 # module: 对应的 VL prompt 模块名（llm/prompts/ 下的文件名，不含 .py）
 # 未配置的算法码默认不启用 VL 复核
 algorithm_vl_config:
+- {code: '10', enabled: false, module: vest}
+- {code: '14', enabled: false, module: smoke}
 - {code: '32', enabled: true, module: sleep_duty}
-# - {code: '50', enabled: true, module: coal_foreign_object}
+- {code: '50', enabled: true, module: coal_foreign_object}
 - {code: '58', enabled: true, module: height_work}
 - {code: '205', enabled: true, module: safety}
 
@@ -196,18 +231,20 @@ algorithm_intervals:
 - {code: '8', interval: 10.0}
 - {code: '10', interval: 10.0}
 - {code: '14', interval: 10.0}
-- {code: '33', interval: 10.0}
-- {code: '34', interval: 2.0}
+- {code: '33', interval: 20.0}
+- {code: '34', interval: 10.0}
 - {code: '52', interval: 10.0}
 - {code: '53', interval: 10.0}
 - {code: '38', interval: 10.0}
-- {code: '32', interval: 10.0}
+- {code: '32', interval: 3.0}
 - {code: '56', interval: 10.0}
-- {code: '57', interval: 0.1}
 - {code: '49', interval: 600.0}
-- {code: '50', interval: 30.0}
+- {code: '50', interval: 10.0}
 - {code: '58', interval: 10.0}
 - {code: '59', interval: 10.0}
+- {code: '60', interval: 1.0}
+- {code: '61', interval: 10.0}
+- {code: '62', interval: 10.0}
 - {code: '200', interval: 10.0}
 - {code: '201', interval: 10.0}
 - {code: '204', interval: 10.0}
@@ -220,22 +257,21 @@ full_frame_algorithms:
 
 # 算法码 -> 需要调用的分类器名称列表（分类模型定义见 config/models.yaml）
 algorithm_classifiers:
-- {code: '14', classifiers: [resnet_smoke]}
+- {code: '1000', classifiers: [resnet_smoke]}
 
 alert_dedup:
 - {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '8', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
-- {code: '10', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '10', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
 - {code: '14', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
-- {code: '16', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5} # 加入灭火器到检测去重
+- {code: '63', enabled: true, cooldown_seconds: 1800, iou_thresh: 0.5} # 加入灭火器到检测去重
 - {code: '32', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
-- {code: '33', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '33', enabled: true, cooldown_seconds: 1800, iou_thresh: 0.5}
 - {code: '34', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
-- {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '56', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '38', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '49', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
-- {code: '50', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
+- {code: '50', enabled: true, cooldown_seconds: 600, iou_thresh: 0.5}
 - {code: '59', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 - {code: '58', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}
 

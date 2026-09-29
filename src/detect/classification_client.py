@@ -89,6 +89,14 @@ class TritonClassificationClient:
             except Exception as e:
                 logger.warning(f"共享内存初始化失败，回退到 HTTP: {e}")
                 self._fallback_to_http()
+        elif self._protocol == "shm" and self.num_classes > 0:
+            # 直接以 SHM 协议初始化：同样需要预置输出缓冲区规格，
+            # 否则每次推理都会因缺少 output_specs 失败并回退 HTTP。
+            self._output_specs = {
+                "classes": ((1, self.num_classes), np.int32),
+                "scores": ((1, self.num_classes), np.float32),
+                "transform_metadata": ((1, 6), np.float32),
+            }
 
         logger.info(
             f"Triton 分类客户端初始化成功 | protocol={self._protocol} | "
@@ -140,11 +148,12 @@ class TritonClassificationClient:
     # ---------- 输入构造 ----------
     @staticmethod
     def _prepare_input(image: np.ndarray) -> np.ndarray:
-        """将 OpenCV BGR 图像转成 Triton ensemble 期望的 RGB [1,H,W,3] uint8。"""
+        """仅给图像加 batch 维；通道转换/resize/normalize 由 classifier_ensemble 自行完成。"""
         if image.ndim != 3 or image.shape[2] != 3:
             raise ValueError(f"输入必须是 HWC BGR 图像，当前 shape={image.shape}")
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        return rgb[np.newaxis, ...].astype(np.uint8, copy=False)
+        # classifier_ensemble 内部已自行处理通道与归一化，客户端只加 batch 维
+        batch_image = image
+        return batch_image[np.newaxis, ...].astype(np.uint8, copy=False)
 
     # ---------- 推理 ----------
     def _infer(self, input_arr: np.ndarray) -> Dict[str, np.ndarray]:
@@ -179,28 +188,32 @@ class TritonClassificationClient:
         :return: (预测类别 ID, 置信度, 各类别概率字典)
         """
         input_arr = self._prepare_input(image)
+
         result = self._infer(input_arr)
 
-        scores = result["scores"]
-        # 兼容 [batch, num_classes] 和 [num_classes] 两种输出
-        if scores.ndim == 2:
-            scores = scores[0]
+        # classifier_ensemble 的 classes 输出是按分数降序排列的类别索引，
+        # scores 与 classes 一一对应（scores[0] 是最高分，classes[0] 是对应类别）。
+        # 因此预测类别必须取 classes[0]，而不能对 scores 做 argmax（排序后恒为 0）。
+        raw_scores = np.asarray(result["scores"]).reshape(-1).astype(np.float64)
+        if "classes" in result and result["classes"].size > 0:
+            raw_classes = np.asarray(result["classes"]).reshape(-1).astype(int)
+        else:
+            # 兼容旧模型：无 classes 输出时，假定 scores 按类别索引自然顺序排列
+            raw_classes = np.arange(len(raw_scores))
 
-        probs = scores.astype(np.float64)
+        if len(raw_scores) == 0:
+            raise TritonClientError("分类模型未返回有效 scores")
 
-        # scores 已是 classifier_postprocess 输出的归一化概率，
-        # 这里只做简单校验，若意外返回 logits 则兜底 softmax
-        if not (np.all(probs >= 0) and abs(probs.sum() - 1.0) < 0.01):
-            e_x = np.exp(probs - np.max(probs))
-            probs = e_x / e_x.sum()
+        # classifier_ensemble 已自行完成 softmax 与 top-k 降序排序，scores 即为归一化概率，
+        # 客户端不再做 softmax 兜底，避免 top-k 截断（概率和 < 1）时被重复归一化导致置信度失真。
+        # 最高分对应的类别即为预测类别（classes 已按分数降序，第一个元素对应最高分）
+        class_id = int(raw_classes[0])
+        confidence = float(raw_scores[0])
 
-        class_id = int(np.argmax(probs))
-        confidence = float(probs[class_id])
-
-        prob_dict = {
-            label: float(probs[i])
-            for i, label in enumerate(self.labels)
-            if i < len(probs)
-        }
+        # 类别 -> 概率映射：raw_classes[i] 对应 raw_scores[i]
+        prob_dict: Dict[str, float] = {}
+        for cid, prob in zip(raw_classes, raw_scores):
+            label = self.labels[cid] if cid < len(self.labels) else str(cid)
+            prob_dict[label] = prob_dict.get(label, 0.0) + float(prob)
 
         return class_id, confidence, prob_dict

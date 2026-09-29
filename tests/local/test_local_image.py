@@ -1,5 +1,21 @@
 """
-本地图片违章检测测试脚本
+本地图片违章检测测试脚本（配置驱动）
+
+测试算法、图片、围栏、推理模式、是否启用分类器/VL 二次确认，均可通过
+config/algorithms.yaml 的 test_local 段配置：
+
+    test_local:
+      default_image_dir: ./asserts/images
+      enable_classifier: true   # 启用分类器二次确认
+      enable_vl: true           # 启用 VL 大模型二次确认
+      algorithms:
+        - {code: '8', fence: '100#100,700#100,700#500,100#500'}
+        - {code: '58'}
+
+处理流水线（与生产一致，均由配置驱动）：
+    推理(YOLO/SAM3) -> 规则分析(analyze_for_task)
+    -> 分类器二次确认(classify_for_task, 按 algorithm_classifiers)
+    -> VL 大模型二次确认(vl_analyze_for_task, 按 algorithm_vl_config)
 
 支持三种推理模式：
   - yolo-sam3（默认）: YOLO 预检 + SAM3 精检，模拟生产流程
@@ -7,30 +23,48 @@
   - sam3-only        : 直接调用 SAM3，不走 YOLO 预检
 
 用法示例：
-    # YOLO预检+SAM3，危险区域闯入（算法8）
-    python tests/local/test_local_image.py -i assets/images/test.jpg -a 8
+    # 按配置文件测试全部算法（不指定 -a 时默认全部）
+    python tests/local/test_local_image.py
 
-    # 整个目录，单人作业（算法34）
-    python tests/local/test_local_image.py -i ./assets/images/ -a 34 -o ./test_results/
+    # 指定测试图片目录（未在配置中单独指定图片的算法都使用该目录）
+    python tests/local/test_local_image.py -i ./asserts/images
+
+    # 只测试单个算法（危险区域闯入，算法8），图片/围栏从配置读取
+    python tests/local/test_local_image.py -a 8
+
+    # 单个算法 + 手动指定图片
+    python tests/local/test_local_image.py -i asserts/images/test.jpg -a 8
 
     # 只用 YOLO 快速检测（适合验证 YOLO 本身）
-    python tests/local/test_local_image.py -i assets/images/test.jpg -a 8 --mode yolo-only
+    python tests/local/test_local_image.py -i asserts/images/test.jpg -a 8 --mode yolo-only
 
     # 只用 SAM3
-    python tests/local/test_local_image.py -i assets/images/test.jpg -a 8 --mode sam3-only
+    python tests/local/test_local_image.py -i asserts/images/test.jpg -a 8 --mode sam3-only
 
-    # 电子围栏，指定围栏坐标（算法8）
-    python tests/local/test_local_image.py -i assets/images/test.jpg -a 8 --fence "100#100,200#100,200#200,100#200"
+    # 命令行临时指定围栏（优先级高于配置）
+    python tests/local/test_local_image.py -i asserts/images/test.jpg -a 8 --fence "100#100,200#100,200#200,100#200"
+
+    # YOLO + SAM3 + 大模型：算法58（安全带）默认即走 yolo->sam3->规则->VL 全流程
+    python tests/local/test_local_image.py -a 58
+
+    # 强制 VL 复核：规则引擎未命中违规时，也把全部检测框提交大模型复核
+    python tests/local/test_local_image.py -a 58 --force-vl
+
+    # 关闭 VL 大模型二次确认（只跑规则引擎）
+    python tests/local/test_local_image.py -a 8 --no-vl
+
+    # 关闭分类器二次确认
+    python tests/local/test_local_image.py -a 14 --no-classifier
 
     # 关闭 Triton 共享内存（回退 HTTP）
-    python tests/local/test_local_image.py -i assets/images/test.jpg -a 8 --no-shm
+    python tests/local/test_local_image.py -i asserts/images/test.jpg -a 8 --no-shm
 """
 
 import argparse
 import os
 import sys
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # 把 src/ 加入 sys.path，确保能 import config/ detect/ utils/ 等模块
 # 当前文件位于 tests/local/，向上回退两级才是项目根目录
@@ -47,6 +81,8 @@ from config.config import config
 from utils.logger import setup_logger
 from utils.obj import Box
 from core.analyzer import analyze_for_task
+from core.classifier import classify_for_task
+from llm.vl_analyzer import vl_analyze_for_task
 from utils.osd import render_alert_frame
 
 logger = setup_logger("test_local")
@@ -54,6 +90,9 @@ logger = setup_logger("test_local")
 # YOLO 客户端缓存（测试脚本内单例）
 _yolo_client_cache = {}
 _use_shm = True  # 是否对 Triton 使用共享内存
+_use_classifier = True  # 是否启用分类器二次确认
+_use_vl = True          # 是否启用 VL 大模型二次确认
+_force_vl = False       # 规则引擎未命中违规时，也强制把检测框提交 VL 复核
 
 
 class MockTask:
@@ -94,6 +133,59 @@ def parse_fence_string(fence_str: str):
         if pts:
             fences.append(pts)
     return fences if fences else None
+
+
+def get_algo_name(algo_code: str) -> str:
+    """从配置 code_descriptions 获取算法名称，未配置时回退到 '算法{code}'"""
+    return config.CODE_DESCRIPTIONS.get(str(algo_code), f"算法{algo_code}")
+
+
+def _resolve_project_path(path: str) -> str:
+    """将相对路径解析为相对项目根目录的绝对路径"""
+    if not path or os.path.isabs(path):
+        return path
+    return os.path.join(PROJECT_ROOT, path)
+
+
+def _resolve_image_for_algo(algo_code: str, cli_image: str, default_image_dir: str) -> str:
+    """
+    解析某算法码的测试图片（返回绝对路径）：
+    test_local 配置 image > 命令行 -i > 默认图片目录
+    """
+    cfg_image = (config.TEST_LOCAL_ALGORITHMS.get(str(algo_code), {}) or {}).get("image") or ""
+    if cfg_image:
+        # 配置的 image 优先按项目根目录解析，其次按默认图片目录解析
+        resolved = _resolve_project_path(cfg_image)
+        if os.path.exists(resolved):
+            return resolved
+        return os.path.join(default_image_dir, cfg_image)
+    if cli_image:
+        return _resolve_project_path(cli_image)
+    return default_image_dir
+
+
+def _resolve_fence_for_algo(algo_code: str, cli_fence: str) -> Optional[List]:
+    """解析围栏：命令行 --fence 优先，其次 test_local 配置，最后为空"""
+    fence_str = (cli_fence
+                 or (config.TEST_LOCAL_ALGORITHMS.get(str(algo_code), {}) or {}).get("fence")
+                 or "")
+    return parse_fence_string(fence_str) if fence_str else None
+
+
+def _sort_codes_key(code: str):
+    """算法码排序键：优先按数值排序，非纯数字时按字符串排序"""
+    try:
+        return (0, int(code))
+    except ValueError:
+        return (1, code)
+
+
+def _sanitize_dir_name(name: str) -> str:
+    """将算法名称清洗为安全的目录名（去掉 Windows 非法字符，避免目录创建失败）"""
+    name = str(name or "unknown").strip()
+    for ch in ('\\', '/', ':', '*', '?', '"', '<', '>', '|'):
+        name = name.replace(ch, '_')
+    return name or "unknown"
 
 
 def _get_yolo_client(model_name: str):
@@ -190,9 +282,9 @@ def detect_sam3_only(frame: np.ndarray, algo_code: str) -> List[Box]:
     """直接调用 SAM3 推理"""
     from detect.sam3 import call_sam3
     prompts = config.ALGORITHM_SAM3_PROMPT.get(str(algo_code), ["person"])
-    print(prompts)
     return_mask = config.ALGORITHM_SAM3_RETURN_MASK.get(str(algo_code), False)
-    sam3_url = config.ALGORITHM_SAM3_URL.get(str(algo_code), "http://192.168.100.75:18002/predict")
+    # 未在 sam3_url_groups 分组的算法码回退到 config.SAM3_URL_OBJ
+    sam3_url = config.ALGORITHM_SAM3_URL.get(str(algo_code)) or config.SAM3_URL_OBJ
     return call_sam3(frame, prompts, return_mask=return_mask, url=sam3_url)
 
 
@@ -245,7 +337,7 @@ def process_image(image_path: str, task, output_dir: str, mode: str):
         label_counts[b.label] = label_counts.get(b.label, 0) + 1
     logger.info(f"推理完成 | 耗时={t1-t0:.3f}s | 总框数={len(all_boxes)} | 类别={label_counts}")
 
-    # 3. 分析
+    # 3. 分析（规则引擎）
     t2_start = time.time()
     fences = task.electricFence if task.electricFence else None
     image_width = frame.shape[1]
@@ -255,7 +347,38 @@ def process_image(image_path: str, task, output_dir: str, mode: str):
         image_width=image_width, image_height=image_height, frame=frame
     )
     t2_end = time.time()
-    logger.info(f"分析完成 | 耗时={t2_end-t2_start:.3f}s | 违规数={len(violations)}")
+    logger.info(f"规则分析完成 | 耗时={t2_end-t2_start:.3f}s | 违规数={len(violations)}")
+
+    # 3.1 分类器二次确认（如吸烟分类，按 algorithm_classifiers 配置）
+    classifier_names = config.ALGORITHM_CLASSIFIERS.get(str(task.algorithmCode), [])
+    if _use_classifier and classifier_names and violations:
+        violations = classify_for_task(
+            frame, task, violations,
+            image_width=image_width, image_height=image_height,
+        )
+        logger.info(f"分类器二次确认 | classifiers={classifier_names} | 剩余违规数={len(violations)}")
+
+    # 3.2 VL 大模型二次确认（按 algorithm_vl_config 配置，如 32 睡岗 / 58 安全带 / 205 安全）
+    # 仅对启用了 VL 的算法生效；--force-vl 时即使规则引擎未命中违规，也会把全部检测框提交大模型复核
+    vl_cfg = config.ALGORITHM_VL_CONFIG.get(str(task.algorithmCode), {})
+    vl_configured = bool(vl_cfg.get("enabled", False))
+    if _use_vl and vl_configured:
+        if violations:
+            vl_candidates = violations
+        elif _force_vl and all_boxes:
+            # 规则引擎未命中违规，但用户显式要求跑大模型：把所有检测框当作候选
+            vl_candidates = list(all_boxes)
+            logger.info(f"--force-vl | 规则引擎未命中违规，将全部检测框作为候选提交 VL 复核（{len(vl_candidates)} 个）")
+        else:
+            vl_candidates = []
+
+        if vl_candidates:
+            logger.info(f"VL 大模型二次确认 | module={vl_cfg.get('module')} | 输入候选数={len(vl_candidates)}")
+            violations = vl_analyze_for_task(
+                frame, task, vl_candidates,
+                image_width=image_width, image_height=image_height,
+            )
+            logger.info(f"VL 二次确认后违规数={len(violations)}")
 
     # 4. 绘制 OSD
     if violations:
@@ -271,78 +394,137 @@ def process_image(image_path: str, task, output_dir: str, mode: str):
         draw_violation_boxes=True
     )
 
-    # 5. 保存结果
+    # 5. 保存结果：有违章/无违章分目录保存
     basename = os.path.basename(image_path)
     name, ext = os.path.splitext(basename)
-    output_path = os.path.join(output_dir, f"{name}_result{ext}")
+    # 有违章 -> violation/，无违章 -> no_violation/
+    sub_dir = "violation" if violations else "no_violation"
+    save_dir = os.path.join(output_dir, sub_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    output_path = os.path.join(save_dir, f"{name}_result{ext}")
     # 使用 cv2.imencode + tofile 以支持中文路径
     success, encoded = cv2.imencode(os.path.splitext(output_path)[1], osd_frame)
     if success:
         encoded.tofile(output_path)
-        logger.info(f"结果已保存: {output_path}")
+        logger.info(f"结果已保存: {output_path} (违规数={len(violations)})")
     else:
         logger.error(f"保存结果失败: {output_path}")
 
     return True
 
 
+def collect_images(image_source: str) -> List[str]:
+    """收集要处理的图片列表（支持单个文件或目录）"""
+    image_paths = []
+    if os.path.isdir(image_source):
+        exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+        for f in sorted(os.listdir(image_source)):
+            if f.lower().endswith(exts):
+                image_paths.append(os.path.join(image_source, f))
+        logger.info(f"目录下找到 {len(image_paths)} 张图片: {image_source}")
+    else:
+        image_paths = [image_source]
+    return image_paths
+
+
+def run_algorithm(task, image_source: str, output_dir: str, mode: str) -> Tuple[int, int]:
+    """对单个算法批量处理图片，返回 (成功数, 图片总数)"""
+    image_paths = collect_images(image_source)
+    if not image_paths:
+        logger.warning(f"算法 {task.algorithmCode} 没有可处理的图片: {image_source}")
+        return 0, 0
+    success = 0
+    for path in image_paths:
+        if process_image(path, task, output_dir, mode):
+            success += 1
+    return success, len(image_paths)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="本地图片违章检测测试脚本")
-    parser.add_argument("-i", "--image", required=True,
-                        help="输入图片路径或图片目录")
+    parser = argparse.ArgumentParser(description="本地图片违章检测测试脚本（配置驱动）")
+    parser.add_argument("-i", "--image", default="",
+                        help="输入图片路径或图片目录；未指定时按算法从 test_local 配置读取，否则用默认图片目录")
     parser.add_argument("-o", "--output", default="./test_results",
-                        help="输出结果目录 (默认: ./test_results)")
-    parser.add_argument("-a", "--algo", default="200",
-                        help="算法代码: 200=手套/面罩, 201=安全帽/皮肤, 204=电子围栏 (默认: 200)")
+                        help="输出根目录；结果按算法名称分目录，再按是否有违章分 violation/no_violation 子目录 (默认: ./test_results)")
+    parser.add_argument("-a", "--algo", default="",
+                        help="算法代码；不指定时测试 config/algorithms.yaml 中配置支持的全部算法")
     parser.add_argument("-m", "--mode", default="yolo-sam3",
                         choices=["yolo-sam3", "yolo-only", "sam3-only"],
                         help="推理模式: yolo-sam3(预检+精检), yolo-only(仅YOLO), sam3-only(仅SAM3) (默认: yolo-sam3)")
     parser.add_argument("--fence", default="",
-                        help="电子围栏坐标，格式: 'x1#y1,x2#y2,x3#y3'，多区域用 || 分隔")
+                        help="电子围栏坐标，格式: 'x1#y1,x2#y2,x3#y3'，多区域用 || 分隔；优先级高于配置文件")
+    parser.add_argument("--no-classifier", action="store_true",
+                        help="关闭分类器二次确认（默认按 test_local.enable_classifier）")
+    parser.add_argument("--no-vl", action="store_true",
+                        help="关闭 VL 大模型二次确认（默认按 test_local.enable_vl）")
+    parser.add_argument("--force-vl", action="store_true",
+                        help="强制 VL 复核：规则引擎未命中违规时，也把全部检测框提交大模型复核")
     parser.add_argument("--no-shm", action="store_true",
                         help="关闭 Triton 共享内存，使用 HTTP numpy 传输")
     args = parser.parse_args()
 
-    global _use_shm
+    global _use_shm, _use_classifier, _use_vl, _force_vl
     _use_shm = not args.no_shm
+    _use_classifier = config.TEST_LOCAL_ENABLE_CLASSIFIER and not args.no_classifier
+    _use_vl = config.TEST_LOCAL_ENABLE_VL and not args.no_vl
+    _force_vl = args.force_vl
 
     os.makedirs(args.output, exist_ok=True)
 
-    algo_names = {"200": "手套/面罩检测", "201": "安全帽/皮肤检测", "204": "电子围栏"}
-    algo_name = algo_names.get(args.algo, f"算法{args.algo}")
-    fence_data = parse_fence_string(args.fence) if args.fence else None
-
-    task = MockTask(
-        algorithm_code=args.algo,
-        algorithm_name=algo_name,
-        electric_fence=fence_data
-    )
-
-    logger.info(f"算法: {algo_name} ({args.algo}) | 模式: {args.mode} | shm={_use_shm} | 输入: {args.image}")
-
-    # 收集图片列表
-    image_paths = []
-    if os.path.isdir(args.image):
-        exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
-        for f in sorted(os.listdir(args.image)):
-            if f.lower().endswith(exts):
-                image_paths.append(os.path.join(args.image, f))
-        logger.info(f"目录下找到 {len(image_paths)} 张图片")
+    # 确定要测试的算法码列表：指定 -a 只测单个，否则按配置测全部
+    if args.algo:
+        algo_codes = [str(args.algo)]
     else:
-        image_paths = [args.image]
+        # supported_codes 与 test_local 中补充的算法码取并集
+        algo_codes = sorted(
+            set(config.ALGORITHM_CODES) | set(config.TEST_LOCAL_ALGORITHMS.keys()),
+            key=_sort_codes_key,
+        )
 
-    if not image_paths:
-        logger.error("没有找到可处理的图片")
-        sys.exit(1)
+    default_image_dir = _resolve_project_path(config.TEST_LOCAL_DEFAULT_IMAGE_DIR)
+    if not os.path.isdir(default_image_dir) and not args.image:
+        logger.warning(f"默认图片目录不存在: {default_image_dir}，请用 -i 指定图片或修改 test_local.default_image_dir")
 
-    success = 0
+    # 汇总启用 VL 的算法码，便于确认大模型测试范围
+    vl_enabled = {c: cfg for c, cfg in config.ALGORITHM_VL_CONFIG.items() if cfg.get("enabled")}
+    logger.info(f"待测试算法: {algo_codes} | 默认模式: {args.mode} | shm={_use_shm} | 默认图片目录: {default_image_dir}")
+    logger.info(f"分类器二次确认: {'开启' if _use_classifier else '关闭'} | "
+                f"VL 大模型: {'开启' if _use_vl else '关闭'}"
+                f"{'（--force-vl）' if _force_vl else ''}"
+                f"{f' | 启用 VL 的算法: {vl_enabled}' if _use_vl and vl_enabled else ''}")
+
+    total_success = 0
+    total_images = 0
     start = time.time()
-    for path in image_paths:
-        if process_image(path, task, args.output, args.mode):
-            success += 1
+
+    for algo_code in algo_codes:
+        algo_name = get_algo_name(algo_code)
+        algo_test_cfg = config.TEST_LOCAL_ALGORITHMS.get(str(algo_code), {}) or {}
+        image_source = _resolve_image_for_algo(algo_code, args.image, default_image_dir)
+        fences = _resolve_fence_for_algo(algo_code, args.fence)
+        algo_mode = algo_test_cfg.get("mode") or args.mode
+
+        if str(algo_code) in config.FENCE_ALGORITHMS and not fences:
+            logger.warning(f"算法 {algo_code}({algo_name}) 属于围栏类算法，但未配置围栏，区域判定将基于空围栏")
+
+        task = MockTask(
+            algorithm_code=algo_code,
+            algorithm_name=algo_name,
+            electric_fence=fences,
+        )
+
+        # 结果统一按算法名称分目录存储（单算法/多算法一致）
+        output_dir = os.path.join(args.output, _sanitize_dir_name(algo_name))
+        os.makedirs(output_dir, exist_ok=True)
+
+        logger.info(f"==== 开始算法 {algo_code}({algo_name}) | 模式={algo_mode} | "
+                    f"围栏={'有' if fences else '无'} | 图片={image_source} ====")
+        success, total = run_algorithm(task, image_source, output_dir, algo_mode)
+        total_success += success
+        total_images += total
 
     elapsed = time.time() - start
-    logger.info(f"完成 | 成功 {success}/{len(image_paths)} | 总耗时 {elapsed:.2f}s")
+    logger.info(f"完成 | 成功 {total_success}/{total_images} | 总耗时 {elapsed:.2f}s")
 
     # 主动关闭 YOLO 客户端，释放 Triton 共享内存，避免解释器关闭阶段 segfault
     global _yolo_client_cache

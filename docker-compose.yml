@@ -54,6 +54,7 @@ services:
       - /dev/shm/${SHM_NAMESPACE:-aidetection}:/dev/shm
       # 违章原图本地保存目录：按类别和日期落盘
       - /mnt/yolo/images:/mnt/yolo/images
+      - /mnt/yolo/artifacts:/mnt/yolo/artifacts
       # 同步宿主机时区，避免容器内时间/日志时间不对
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro

@@ -5,7 +5,7 @@ from typing import List, Dict, Optional
 import numpy as np
 
 from utils.obj import Box
-from utils.filter import label_filter, score_filter, area_filter
+from utils.filter import label_filter, score_filter, area_filter, nms_filter
 from utils.logger import setup_logger
 
 logger = setup_logger("sleep_duty")
@@ -17,48 +17,60 @@ class SleepDutyDetector:
 
     逻辑：
       1. 从 SAM3 返回的 Box 中过滤出 person、head、hand、face（需开启 return_mask）。
-      2. 按 mask 重叠度（或 box IoU）为每个 person 分配跟踪 ID，维护每个 ID 的静止积分。
-      3. 通过对比相邻帧中 person / head / hand 的 mask 重叠度，判断人员是否静止。
-      4. 如果能看到脸部（SAM3 检出与人绑定的 face），直接判定为未睡岗，清空静止积分。
-      5. 当静止时长超过阈值时，输出 sleeping 违规框，由上层 VL 模块统一进行二次确认。
+      2. 按 mask 重叠度（或 box IoU）为每个 person 分配跟踪 ID，维护每个 ID 的“连续静止次数”。
+      3. 每次分析时对比当前帧与上一次观测的 person / head / hand 的 mask 重叠度：
+         静止则次数 +1，出现移动（或看到脸）则次数清零。
+      4. 连续静止次数达到 sleep_threshold_frames 时，输出 sleeping 违规框，
+         由上层 VL 模块统一进行二次确认。
 
     说明：
+      - 按“次数”计数，与检测频率无关：检测间隔 3s 时 50 次 ≈ 150s，间隔 10s 时 ≈ 500s，
+        想看实际时长就调检测间隔或阈值次数。
       - 本检测器使用简单的 mask/IoU 进行 ID 关联，不依赖 ByteTrack 等外部跟踪器。
+      - person 框先做 NMS 去重（person_nms_iou），避免同一人被重复检测后重复跟踪。
+      - 同一帧内一个 ID 只分配给一个 person，避免两人共用一份计数互相串扰。
+      - 漏检保护：连续 max_missing_frames 次没检测到该 ID，视为人员离开画面，计数清零。
       - 必须在 config/algorithms.yaml 中为算法码 32 配置 return_mask: true。
       - VL 二次确认统一走 llm/vl_analyzer.py，本检测器不再内部调用大模型，避免重复请求。
     """
 
     def __init__(
         self,
-        person_min_score: float = 0.85,
+        person_min_score: float = 0.8,
         person_min_area: float = 5000.0,
-        part_min_score: float = 0.7,
+        part_min_score: float = 0.65,
         face_min_score: float = 0.8,
-        bind_iou_threshold: float = 0.5,
-        bind_mask_iom_threshold: float = 0.5,
+        person_nms_iou: float = 0.6,
+        bind_iou_threshold: float = 0.7,
+        bind_mask_iom_threshold: float = 0.7,
         still_iom_threshold: float = 0.95,
-        sleep_threshold_seconds: float = 300.0,
-        cleanup_timeout_seconds: float = 600.0,
+        sleep_threshold_frames: int = 50,
+        max_missing_frames: int = 5,
+        cleanup_timeout_seconds: float = 1000.0,
     ):
         """
         :param person_min_score: person 最低置信度
         :param person_min_area: person 最小面积（像素）
         :param part_min_score: head / hand 最低置信度
         :param face_min_score: face 最低置信度
-        :param bind_iou_threshold: 用 box IoU 绑定部位或关联 ID 时的最小阈值
+        :param person_nms_iou: person 框 NMS 去重的 IoU 阈值
+        :param bind_iou_threshold: 用 box IoU 关联 ID 时的最小阈值（无 mask 时使用）
         :param bind_mask_iom_threshold: 用 mask IoM 绑定部位或关联 ID 时的最小阈值
         :param still_iom_threshold: 判定为静止的最小 mask IoM（重叠度高于此值认为静止）
-        :param sleep_threshold_seconds: 触发 sleeping 违规的静止时长阈值（秒）
+        :param sleep_threshold_frames: 触发 sleeping 违规的连续静止次数阈值（次）
+        :param max_missing_frames: 连续多少次没检测到该 ID 就视为人员离开画面，计数清零（次）
         :param cleanup_timeout_seconds: 长时间未出现则清理 ID 的超时时间（秒）
         """
         self.person_min_score = person_min_score
         self.person_min_area = person_min_area
         self.part_min_score = part_min_score
         self.face_min_score = face_min_score
+        self.person_nms_iou = person_nms_iou
         self.bind_iou_threshold = bind_iou_threshold
         self.bind_mask_iom_threshold = bind_mask_iom_threshold
         self.still_iom_threshold = still_iom_threshold
-        self.sleep_threshold_seconds = sleep_threshold_seconds
+        self.sleep_threshold_frames = max(1, int(sleep_threshold_frames))
+        self.max_missing_frames = max(0, int(max_missing_frames))
         self.cleanup_timeout_seconds = cleanup_timeout_seconds
 
         # 简单的 ID 关联状态
@@ -86,15 +98,31 @@ class SleepDutyDetector:
         person_box: Box,
         image_width: int,
         image_height: int,
+        used_ids: set,
     ) -> str:
-        """按 mask 重叠度（或 box IoU）为当前 person 匹配已有 ID，未匹配则分配新 ID。"""
+        """
+        按 mask 重叠度（或 box IoU）为当前 person 匹配已有 ID，未匹配则分配新 ID。
+
+        :param used_ids: 本帧已被占用的 ID 集合；同一个 ID 在同一帧不允许重复分配，
+                         否则多个人会共用一份静止积分、last_masks 互相覆盖导致状态串扰
+        """
         best_tid = None
-        best_score = max(self.bind_iou_threshold, self.bind_mask_iom_threshold)
+        best_score = 0.0
 
         for tid, tdata in self._trackers.items():
-            last_box = Box("person", 1.0, tdata["last_box"])
+            if tid in used_ids:
+                continue
+
+            # 使用完整的上一帧 Box（含 mask），保证 mask IoM 能真正生效
+            last_box = tdata.get("last_person_box")
+            if last_box is None:
+                continue
+
             score = self._overlap_score(person_box, last_box, image_width, image_height)
-            if score > best_score:
+            # 根据实际使用的度量选择阈值，避免拿 box IoU 去比 mask IoM 的阈值
+            has_mask = person_box.mask is not None and last_box.mask is not None
+            threshold = self.bind_mask_iom_threshold if has_mask else self.bind_iou_threshold
+            if score >= threshold and score > best_score:
                 best_score = score
                 best_tid = tid
 
@@ -103,10 +131,10 @@ class SleepDutyDetector:
             self._next_id += 1
             self._trackers[best_tid] = {
                 "last_masks": {"person": None, "head": None, "hands": []},
-                "score": 0.0,
-                "last_box": person_box.box,
+                "last_person_box": None,
+                "still_count": 0,     # 连续静止次数
+                "miss": 0,            # 连续漏检次数
                 "last_seen": time.time(),
-                "last_process_time": time.time(),
                 "alerted": False,
             }
 
@@ -215,8 +243,11 @@ class SleepDutyDetector:
 
         # 1. 过滤 person / head / hand / face
         person_boxes = label_filter(predictions, ["person"])
+        person_boxes = [p for p in person_boxes if p.source == "SAM3"]
         person_boxes = score_filter(person_boxes, self.person_min_score)
         person_boxes = area_filter(person_boxes, self.person_min_area)
+        # 同一人被重复检测成多个重叠框时会导致重复跟踪，先做 NMS 去重
+        person_boxes = nms_filter(person_boxes, self.person_nms_iou)
 
         head_boxes = label_filter(predictions, ["head"])
         head_boxes = score_filter(head_boxes, self.part_min_score)
@@ -236,11 +267,13 @@ class SleepDutyDetector:
             del self._trackers[tid]
 
         # 3. 按 person 进行睡岗判定
+        used_ids = set()   # 本帧已分配的 ID，保证一帧内一个 ID 只对应一个 person
         for person_box in person_boxes:
             # 关联 ID
-            tid = self._associate_id(person_box, image_width, image_height)
+            tid = self._associate_id(person_box, image_width, image_height, used_ids)
+            used_ids.add(tid)
             tdata = self._trackers[tid]
-            time_delta = now - tdata["last_process_time"]
+            tdata["miss"] = 0   # 本帧观测到了
 
             # 找出属于该人员的 head / hands（优先使用 mask IoM，无 mask 时回退 IoU）
             matched_head = None
@@ -264,49 +297,45 @@ class SleepDutyDetector:
                     matched_face = face
                     break
 
-            if matched_face is not None:
-                # 看到脸：清空积分，不进入静止累计
-                if tdata["score"] > 0:
-                    logger.info(
-                        f"[device={device_id}] ID:{tid} 检测到可见脸部，"
-                        f"静止积分清零 (原 {tdata['score']:.2f}s)"
-                    )
-                tdata["score"] = 0.0
-                tdata["alerted"] = False
-                # 更新状态但不继续判定 sleeping
-                tdata["last_masks"] = {
-                    "person": person_box,
-                    "head": matched_head,
-                    "hands": matched_hands,
-                    "face": matched_face,
-                }
-                tdata["last_box"] = person_box.box
-                tdata["last_seen"] = now
-                tdata["last_process_time"] = now
-                continue
-
-            # 判定是否静止
-            is_still = self._detect_stillness(
-                person_box,
-                matched_head,
-                matched_hands,
-                tdata,
-                image_width,
-                image_height,
-            )
+            # 判定本帧是否静止并更新连续静止次数
+            if tdata["last_person_box"] is None:
+                # 新建 ID 的第一次观测没有比较基准，本帧不计数
+                logger.debug(f"[device={device_id}] ID:{tid} 首次观测，建立比较基准")
+                is_still = False
+                reason = "首次观测"
+            elif matched_face is not None:
+                # 看到脸：认为人员清醒
+                is_still = False
+                reason = "检测到可见脸部"
+            else:
+                is_still = self._detect_stillness(
+                    person_box,
+                    matched_head,
+                    matched_hands,
+                    tdata,
+                    image_width,
+                    image_height,
+                )
+                reason = "与上一帧重叠度不足"
 
             if is_still:
-                tdata["score"] += time_delta
-                logger.debug(
-                    f"[device={device_id}] ID:{tid} 静止中，累计 {tdata['score']:.2f}s"
-                )
-            else:
-                if tdata["score"] > 0:
+                tdata["still_count"] += 1
+                if tdata["still_count"] % 10 == 0:
                     logger.info(
-                        f"[device={device_id}] ID:{tid} 发生移动，静止积分清零 "
-                        f"(原 {tdata['score']:.2f}s)"
+                        f"[device={device_id}] ID:{tid} 连续静止 "
+                        f"{tdata['still_count']} 次 / 阈值 {self.sleep_threshold_frames} 次"
                     )
-                tdata["score"] = 0.0
+                else:
+                    logger.debug(
+                        f"[device={device_id}] ID:{tid} 静止中，第 {tdata['still_count']} 次"
+                    )
+            else:
+                if tdata["still_count"] > 0:
+                    logger.info(
+                        f"[device={device_id}] ID:{tid} 连续静止被打断（{reason}），"
+                        f"计数清零 (原 {tdata['still_count']} 次)"
+                    )
+                tdata["still_count"] = 0
                 tdata["alerted"] = False
 
             # 更新状态
@@ -315,25 +344,38 @@ class SleepDutyDetector:
                 "head": matched_head,
                 "hands": matched_hands,
             }
-            tdata["last_box"] = person_box.box
+            tdata["last_person_box"] = person_box
             tdata["last_seen"] = now
-            tdata["last_process_time"] = now
 
             # 触发 sleeping 违规输出（VL 二次确认统一由 vl_analyzer 处理）
-            if tdata["score"] >= self.sleep_threshold_seconds and not tdata["alerted"]:
+            if tdata["still_count"] >= self.sleep_threshold_frames and not tdata["alerted"]:
                 logger.info(
-                    f"[device={device_id}] ID:{tid} 静止时长 {tdata['score']:.2f}s，"
+                    f"[device={device_id}] ID:{tid} 连续静止 {tdata['still_count']} 次，"
                     f"输出睡岗嫌疑目标，等待 VL 复核"
                 )
                 alert_box = Box(
                     label="sleeping",
-                    score=min(1.0, tdata["score"] / self.sleep_threshold_seconds),
+                    score=min(1.0, tdata["still_count"] / self.sleep_threshold_frames),
                     box=person_box.box,
                 )
                 result.append(alert_box)
                 tdata["alerted"] = True
                 # 输出一次后清零，防止同一静止周期内连续重复输出；
-                # 若人员继续静止，后续会重新累计并再次触发
-                tdata["score"] = 0.0
+                # 若人员继续静止，后续会重新计数并再次触发
+                tdata["still_count"] = 0
+
+        # 4. 本帧没被观测到的 ID：累计漏检次数，连续多次没看到就认为人已离开画面，计数清零
+        for tid, tdata in self._trackers.items():
+            if tid in used_ids:
+                continue
+            tdata["miss"] = tdata.get("miss", 0) + 1
+            if tdata["miss"] > self.max_missing_frames and tdata["still_count"] > 0:
+                logger.info(
+                    f"[device={device_id}] ID:{tid} 连续 {tdata['miss']} 次未检测到，"
+                    f"视为人员离开画面，静止计数清零 (原 {tdata['still_count']} 次)"
+                )
+                tdata["still_count"] = 0
+                tdata["alerted"] = False
 
         return result
+
