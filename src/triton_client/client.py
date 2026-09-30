@@ -4,30 +4,30 @@
 Examples
 --------
 # gRPC
-client = TritonClient(url="localhost:48001", protocol="grpc")
+client = TritonClient(url="localhost:54246", protocol="grpc")
 result = client.infer(
-    model_name="yolo11_ensemble",
-    inputs={"raw_image": img_np},
-    outputs=["num_dets", "detection_boxes"],
+    model_name="YOLO11_DET_PRE_ENSEMBLE",
+    inputs={"IMAGE": img_np},
+    outputs=["NUM_DETS", "DETECTION_BOXES"],
 )
 
 # HTTP
-client = TritonClient(url="localhost:48000", protocol="http")
+client = TritonClient(url="localhost:54245", protocol="http")
 result = client.infer(
-    model_name="yolo11_ensemble",
-    inputs={"raw_image": img_np},
-    outputs=["num_dets", "detection_boxes"],
+    model_name="YOLO11_DET_PRE_ENSEMBLE",
+    inputs={"IMAGE": img_np},
+    outputs=["NUM_DETS", "DETECTION_BOXES"],
 )
 
 # System shared memory (over HTTP)
-client = TritonClient(url="localhost:48000", protocol="shm")
+client = TritonClient(url="localhost:54245", protocol="shm")
 result = client.infer(
-    model_name="yolo11_ensemble",
-    inputs={"raw_image": img_np},
-    outputs=["num_dets", "detection_boxes"],
+    model_name="YOLO11_DET_PRE_ENSEMBLE",
+    inputs={"IMAGE": img_np},
+    outputs=["NUM_DETS", "DETECTION_BOXES"],
     output_specs={
-        "num_dets": ([1, 1], "int32"),
-        "detection_boxes": ([1, 300, 4], "float32"),
+        "NUM_DETS": ([1], "int32"),
+        "DETECTION_BOXES": ([300, 4], "float32"),
     },
 )
 """

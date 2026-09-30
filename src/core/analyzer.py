@@ -1,6 +1,6 @@
 import inspect
 import threading
-from typing import Dict, List, Tuple, Optional
+from typing import Callable, Dict, List, Tuple, Optional
 
 import numpy as np
 
@@ -122,6 +122,7 @@ def analyze_for_task(
     image_width: int = 0,
     image_height: int = 0,
     frame: Optional[np.ndarray] = None,
+    frame_provider: Optional[Callable[[], np.ndarray]] = None,
 ) -> List[Box]:
     """
     根据任务的算法代码，对 Box 列表进行对应的违规分析
@@ -132,6 +133,7 @@ def analyze_for_task(
     :param image_width: 原图宽度
     :param image_height: 原图高度
     :param frame: 当前帧图像（BGR numpy 数组），部分检测器（如 MoveUsePhoneDetector）需要缓存历史帧
+    :param frame_provider: 按需获取 BGR 图像；仅当检测器接收 frame 参数时调用
     :return: 违规目标 Box 列表
     """
     algo_code = str(task.algorithmCode)
@@ -165,8 +167,11 @@ def analyze_for_task(
                     "image_width": image_width,
                     "image_height": image_height,
                 }
-                if frame is not None and "frame" in inspect.signature(detector.detect).parameters:
-                    detect_kwargs["frame"] = frame
+                if "frame" in inspect.signature(detector.detect).parameters:
+                    if frame is None and frame_provider is not None:
+                        frame = frame_provider()
+                    if frame is not None:
+                        detect_kwargs["frame"] = frame
                 detector_result = detector.detect(boxes, **detect_kwargs)
                 if len(boxes) > 0 or frame is not None:
                     logger.info(f"[device={device_id}] task_name={task_name} analyze_for_task 检测器 {detector.__class__.__name__} 返回 {len(detector_result)} 个违规目标")

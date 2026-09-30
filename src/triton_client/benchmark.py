@@ -13,16 +13,19 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+import cv2
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from triton_client import TritonClient
+from utils.image_formats import bgr_to_nv12
 
 
 def load_image(path: str):
-    """Load image and add batch dimension."""
-    img = Image.open(path).convert("RGB")
-    return np.array(img)[np.newaxis, ...]  # [1, H, W, 3]
+    """Load an unbatched BGR image."""
+    image = cv2.imread(path)
+    if image is None:
+        raise ValueError(f"Cannot read image: {path}")
+    return image
 
 
 def run_benchmark(
@@ -34,21 +37,22 @@ def run_benchmark(
     warmup: int,
 ):
     img_np = load_image(image_path)
+    input_name = "YUV" if model_name.endswith("_YUV_ENSEMBLE") else "IMAGE"
+    if input_name == "YUV":
+        img_np = bgr_to_nv12(img_np)[..., None]
 
     outputs = [
-        "num_dets",
-        "detection_boxes",
-        "detection_scores",
-        "detection_classes",
-        "transform_metadata",
+        "NUM_DETS",
+        "DETECTION_BOXES",
+        "DETECTION_SCORES",
+        "DETECTION_CLASSES",
     ]
 
     output_specs = {
-        "num_dets": ([1, 1], "int32"),
-        "detection_boxes": ([1, 300, 4], "float32"),
-        "detection_scores": ([1, 300], "float32"),
-        "detection_classes": ([1, 300], "int32"),
-        "transform_metadata": ([1, 6], "float32"),
+        "NUM_DETS": ([1], "int32"),
+        "DETECTION_BOXES": ([300, 4], "float32"),
+        "DETECTION_SCORES": ([300], "float32"),
+        "DETECTION_CLASSES": ([300], "int32"),
     }
 
     print(f"Protocol: {protocol}")
@@ -68,7 +72,7 @@ def run_benchmark(
         if protocol == "shm":
             infer_kwargs["output_specs"] = output_specs
 
-        inputs = {"raw_image": img_np}
+        inputs = {input_name: img_np}
 
         # Warmup.
         print("\nWarming up ...")
@@ -113,7 +117,7 @@ def main():
     )
     parser.add_argument(
         "--model",
-        default="yolov5_ensemble",
+        default="YOLO26_DET_PRE_YUV_ENSEMBLE",
         help="Model or ensemble name",
     )
     parser.add_argument(
@@ -123,12 +127,12 @@ def main():
     )
     parser.add_argument(
         "--grpc-url",
-        default="localhost:48001",
+        default="localhost:54246",
         help="gRPC server URL",
     )
     parser.add_argument(
         "--http-url",
-        default="localhost:48000",
+        default="localhost:54245",
         help="HTTP/SHM server URL",
     )
     parser.add_argument(

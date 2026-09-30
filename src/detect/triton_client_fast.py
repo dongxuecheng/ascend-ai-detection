@@ -1,10 +1,8 @@
 """
 YOLO Triton 推理客户端（基于 triton_client 统一封装）
 
-当前 Triton 服务已集成图像预处理与 YOLO 后处理，客户端只需：
-  1. 将原始 BGR 帧转成 RGB 后整体送入 Triton（输入名 raw_image）。
-  2. 解析返回的 num_dets / detection_boxes / detection_scores / detection_classes。
-  3. 使用 Triton 返回的 transform_metadata 仿射矩阵将检测框映射回原图坐标。
+适配 triton-inference-server-ascend：BGR [H,W,3] 输入 IMAGE，或 NV12 [H*3/2,W,1] 输入 YUV，
+大写 DETECTION_* 输出已经是原图坐标。backend="legacy" 显式保留旧服务契约。
 
 底层通信统一使用 src/triton_client.TritonClient。为降低多线程/多模型场景下的
 连接与文件描述符开销，同一线程、同一 URL+协议 的 TritonClient 实例会被复用。
@@ -21,6 +19,7 @@ import numpy as np
 from triton_client import TritonClient, TritonClientError
 from utils.obj import Box
 from utils.logger import setup_logger
+from utils.image_formats import bgr_to_nv12, nv12_image_shape
 
 logger = setup_logger("triton_client_fast")
 
@@ -66,6 +65,8 @@ _DEFAULT_OUTPUT_SPECS: Dict[str, Tuple[Tuple[int, ...], np.dtype]] = {
     "transform_metadata": ((1, 6), np.float32),
 }
 
+_ASCEND_OUTPUT_NAMES = ["NUM_DETS", "DETECTION_BOXES", "DETECTION_SCORES", "DETECTION_CLASSES"]
+
 # 线程本地 TritonClient 缓存：减少 HTTP/SHM 多模型场景下的连接开销。
 # gRPC 客户端在 TritonClient 内部已按 URL 进程级共享，无需此处再缓存。
 _thread_local = threading.local()
@@ -90,19 +91,22 @@ class YOLOTritonFast:
 
     def __init__(
         self,
-        url: str = "localhost:38000",
-        model_name: str = "yolo26_ensemble",
+        url: Optional[str] = None,
+        model_name: str = "YOLO26_DET_PRE_ENSEMBLE",
         input_size: int = 640,
         conf_thresh: float = 0.3,
         iou_thresh: float = 0.45,
         warmup: bool = True,
         label_map: Optional[Dict[int, str]] = None,
-        input_name: str = "images",
+        input_name: Optional[str] = None,
         output_name: str = "output0",
         output_format: str = "yolo_v8_v11",
         use_shared_memory: bool = True,
-        protocol: str = "shm",
+        protocol: str = "grpc",
+        backend: str = "ascend",
+        max_detections: int = 300,
     ):
+        url = url or ("localhost:54246" if protocol.lower() == "grpc" else "localhost:54245")
         self.url = url
         self.model_name = model_name
         self.input_size = input_size
@@ -110,13 +114,27 @@ class YOLOTritonFast:
         # iou_thresh / output_format 在此封装中不再使用，保留参数以兼容旧接口
         self.iou_thresh = iou_thresh
         self.output_format = output_format
+        self.backend = backend.lower()
+        if self.backend not in ("ascend", "legacy"):
+            raise ValueError(f"不支持的 backend: {backend}")
+        if max_detections <= 0:
+            raise ValueError("max_detections 必须大于 0")
+        self.max_detections = max_detections
         self.protocol = protocol.lower()
+        if self.protocol == "shm" and not use_shared_memory:
+            self.protocol = "http"
         if self.protocol not in ("grpc", "http", "shm"):
             raise ValueError(f"不支持的 protocol: {protocol}")
 
         # 兼容旧配置中传入的 images / output0：实际使用 ensemble 默认名
-        self.input_name = input_name if input_name != "images" else _DEFAULT_INPUT_NAME
-        self.output_names = _DEFAULT_OUTPUT_NAMES
+        if self.backend == "ascend":
+            self.input_name = input_name or ("YUV" if model_name.endswith("_YUV_ENSEMBLE") else "IMAGE")
+            if self.input_name not in ("IMAGE", "YUV"):
+                raise ValueError("Ascend ensemble 输入必须为 IMAGE 或 YUV")
+            self.output_names = list(_ASCEND_OUTPUT_NAMES)
+        else:
+            self.input_name = input_name if input_name not in (None, "images") else _DEFAULT_INPUT_NAME
+            self.output_names = list(_DEFAULT_OUTPUT_NAMES)
 
         if label_map is None:
             self.label_map = dict(_DEFAULT_COCO_LABEL_MAP)
@@ -169,7 +187,15 @@ class YOLOTritonFast:
     def _setup_shared_memory(self) -> None:
         """复用同线程 SHM 客户端并预置输出缓冲区规格。"""
         self._client = _get_shared_triton_client(self.url, "shm")
-        self._output_specs = dict(_DEFAULT_OUTPUT_SPECS)
+        if self.backend == "ascend":
+            self._output_specs = {
+                "NUM_DETS": ((1,), np.int32),
+                "DETECTION_BOXES": ((self.max_detections, 4), np.float32),
+                "DETECTION_SCORES": ((self.max_detections,), np.float32),
+                "DETECTION_CLASSES": ((self.max_detections,), np.int32),
+            }
+        else:
+            self._output_specs = dict(_DEFAULT_OUTPUT_SPECS)
 
     def _fallback_to_http(self) -> None:
         """回退到 HTTP 协议（复用同线程共享客户端）。"""
@@ -180,8 +206,13 @@ class YOLOTritonFast:
     def _warmup(self) -> None:
         """使用一张与模型输入尺寸一致的黑图预热推理。"""
         logger.info("Warmup 中...")
-        dummy = np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8)
-        self.predict(dummy, classes=None)
+        if self.input_name == "YUV":
+            dummy = np.full((self.input_size * 3 // 2, self.input_size), 128, dtype=np.uint8)
+            dummy[:self.input_size] = 16
+            self.predict_nv12(dummy)
+        else:
+            dummy = np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8)
+            self.predict(dummy, classes=None)
         logger.info("Warmup 完成")
 
     # ---------- 生命周期 ----------
@@ -200,16 +231,31 @@ class YOLOTritonFast:
 
     # ---------- 公共流程 ----------
     def predict(self, frame: np.ndarray, classes: Optional[List[int]] = None) -> List[Box]:
-        """推理单帧：送入原图 → 解析 ensemble 输出 → 坐标映射 → 构造 Box。"""
+        """BGR 图片入口；YUV 模型仅在此兼容入口转换为 NV12。"""
         t0 = time.time()
         input_arr = self._prepare_input(frame)
+        return self._predict_prepared(input_arr, frame.shape[:2], classes, t0)
+
+    def predict_nv12(self, frame: np.ndarray, classes: Optional[List[int]] = None) -> List[Box]:
+        """原始 NV12 直通；只补通道维度，不转 BGR、不做颜色变换。"""
+        if self.backend != "ascend" or self.input_name != "YUV":
+            raise ValueError("predict_nv12 需要 Ascend YUV ensemble")
+        t0 = time.time()
+        image_shape = nv12_image_shape(frame)
+        packed = frame[..., None] if frame.ndim == 2 else frame
+        return self._predict_prepared(np.ascontiguousarray(packed), image_shape, classes, t0)
+
+    def _predict_prepared(self, input_arr, frame_shape, classes, t0) -> List[Box]:
         t1 = time.time()
 
         result = self._infer(input_arr)
         t2 = time.time()
 
-        transform = self._extract_transform(result.get("transform_metadata"))
-        boxes = self._parse_outputs(result, frame.shape[:2], classes, transform)
+        if self.backend == "ascend":
+            boxes = self._parse_ascend_outputs(result, frame_shape, classes)
+        else:
+            transform = self._extract_transform(result.get("transform_metadata"))
+            boxes = self._parse_outputs(result, frame_shape, classes, transform)
         t3 = time.time()
 
         filter_info = f" 类别过滤={classes}" if classes else ""
@@ -221,11 +267,16 @@ class YOLOTritonFast:
         return boxes
 
     # ---------- 输入构造 ----------
-    @staticmethod
-    def _prepare_input(frame: np.ndarray) -> np.ndarray:
-        """将 OpenCV BGR 帧转为 Triton ensemble 期望的 RGB [1,H,W,3] uint8。"""
+    def _prepare_input(self, frame: np.ndarray) -> np.ndarray:
+        """Ascend 直接传 BGR HWC；旧服务保持 RGB NHWC。"""
         if frame.ndim != 3 or frame.shape[2] != 3:
             raise ValueError(f"输入必须是 HWC BGR 图像，当前 shape={frame.shape}")
+        if frame.dtype != np.uint8 or not frame.size:
+            raise ValueError("输入必须是非空 uint8 BGR 图像")
+        if self.backend == "ascend":
+            if self.input_name == "YUV":
+                return bgr_to_nv12(frame)[..., None]
+            return np.ascontiguousarray(frame)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return rgb[np.newaxis, ...].astype(np.uint8, copy=False)
 
@@ -254,6 +305,31 @@ class YOLOTritonFast:
             raise
 
     # ---------- 输出解析与坐标映射 ----------
+    def _parse_ascend_outputs(self, result, frame_shape, classes) -> List[Box]:
+        """新 ensemble 已还原坐标，不请求或解释 TRANSFORM_METADATA。"""
+        count_array = np.asarray(result["NUM_DETS"])
+        if count_array.shape != (1,) or not np.issubdtype(count_array.dtype, np.integer):
+            raise ValueError("NUM_DETS 必须为整数 [1]")
+        count = int(count_array[0])
+        boxes = np.asarray(result["DETECTION_BOXES"])
+        scores = np.asarray(result["DETECTION_SCORES"])
+        ids = np.asarray(result["DETECTION_CLASSES"])
+        if boxes.ndim != 2 or boxes.shape[1] != 4 or scores.ndim != 1 or ids.ndim != 1:
+            raise ValueError("Ascend 检测输出必须为 [N,4] / [N] / [N]，不含 batch 维度")
+        if count < 0 or count > min(len(boxes), len(scores), len(ids)):
+            raise ValueError("NUM_DETS 超出输出张量范围")
+        boxes = boxes[:count].astype(np.float32, copy=True)
+        scores, ids = scores[:count], ids[:count]
+        valid = np.isfinite(boxes).all(axis=1) & np.isfinite(scores) & np.isfinite(ids)
+        valid &= (scores >= self.conf_thresh) & (ids >= 0) & (ids == np.floor(ids))
+        if classes is not None:
+            valid &= np.isin(ids, classes)
+        height, width = frame_shape
+        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, width)
+        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, height)
+        valid &= (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        return self._to_boxes(boxes[valid], scores[valid], ids[valid])
+
     @staticmethod
     def _extract_transform(transform_metadata: Optional[np.ndarray]) -> Optional[np.ndarray]:
         """将 Triton 返回的 [1,6] transform_metadata 转成 2x3 仿射矩阵。"""

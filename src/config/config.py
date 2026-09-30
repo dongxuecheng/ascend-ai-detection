@@ -1,7 +1,7 @@
 import os
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from typing import Dict, List
+from typing import Dict, List, Literal
 
 import yaml
 # 自动加载项目根目录或当前目录下的 .env 文件
@@ -131,10 +131,19 @@ class BaseConfig(BaseModel):
 
     # ---- Triton YOLO 推理服务 ----
     # HTTP 端口（共享内存/HTTP 调用时使用）
-    TRITON_YOLO_URL: str = os.getenv("TRITON_YOLO_URL", "192.168.100.74:38000")
+    TRITON_YOLO_URL: str = os.getenv("TRITON_YOLO_URL", "localhost:54245")
     # gRPC 端口（推荐，避免 gevent/libev 文件描述符开销）
-    TRITON_YOLO_GRPC_URL: str = os.getenv("TRITON_YOLO_GRPC_URL", "192.168.100.74:38001")
-    # 分类模型默认共用同一 Triton 服务的 gRPC 端口
+    TRITON_YOLO_GRPC_URL: str = os.getenv("TRITON_YOLO_GRPC_URL", "localhost:54246")
+    TRITON_PROTOCOL: Literal["grpc", "http", "shm"] = os.getenv("TRITON_PROTOCOL", "grpc").lower()
+
+    def triton_endpoint(self, protocol: str | None = None) -> str:
+        """本项目 SHM 使用 HTTP 管理，不能套用上游 SHM 示例的 gRPC 端口。"""
+        protocol = protocol or self.TRITON_PROTOCOL
+        if protocol not in ("grpc", "http", "shm"):
+            raise ValueError(f"不支持的 Triton 协议: {protocol}")
+        return self.TRITON_YOLO_GRPC_URL if protocol == "grpc" else self.TRITON_YOLO_URL
+
+    # 旧分类客户端保留字段；新后端暂无分类模型，当前不启用。
     TRITON_CLASSIFIER_GRPC_URL: str = os.getenv("TRITON_CLASSIFIER_GRPC_URL", "192.168.100.74:38001")
 
     # ---- VL 大模型配置 ----

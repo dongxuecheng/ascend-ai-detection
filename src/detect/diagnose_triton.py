@@ -5,14 +5,18 @@ Triton 性能诊断脚本
 
 import sys
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 import tritonclient.grpc as grpcclient
 from tritonclient.utils import InferenceServerException
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from utils.image_formats import bgr_to_nv12
 
-def diagnose(url: str = "localhost:38001", model_name: str = "yolo"):
+
+def diagnose(url: str = "localhost:54246", model_name: str = "YOLO26_DET_PRE_YUV_ENSEMBLE"):
     print(f"\n{'='*60}")
     print(f"Triton 性能诊断 | {url} | {model_name}")
     print(f"{'='*60}\n")
@@ -65,7 +69,9 @@ def diagnose(url: str = "localhost:38001", model_name: str = "yolo"):
 
     # 4. 实际跑一轮推理，分段计时
     print("\n[4] 实际推理计时")
-    dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
+    dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+    if model_name.endswith("_YUV_ENSEMBLE"):
+        dummy = bgr_to_nv12(dummy)[..., None]
 
     # warmup
     for _ in range(3):
@@ -83,21 +89,23 @@ def diagnose(url: str = "localhost:38001", model_name: str = "yolo"):
     print(f"    最快: {min(infer_times):.2f}ms | 最慢: {max(infer_times):.2f}ms")
 
     if np.mean(infer_times) > 100:
-        print("\n    ⚠️ 警告: 推理延迟 > 100ms，RTX 4090 上不正常！")
-        print("    请检查: (1) engine 是否真 FP16  (2) Triton 日志是否有 CPU fallback")
+        print("\n    推理延迟 > 100ms，请结合设备负载、输入尺寸和模型统计排查。")
 
     print(f"\n{'='*60}\n")
 
 
 def _infer(client, model_name, tensor):
     from tritonclient.grpc import InferInput, InferRequestedOutput
-    inputs = [InferInput("image_input", tensor.shape, "FP32")]
+    input_name = "YUV" if model_name.endswith("_YUV_ENSEMBLE") else "IMAGE"
+    inputs = [InferInput(input_name, tensor.shape, "UINT8")]
     inputs[0].set_data_from_numpy(tensor)
-    outputs = [InferRequestedOutput("final_boxes")]
+    outputs = [InferRequestedOutput(name) for name in (
+        "NUM_DETS", "DETECTION_BOXES", "DETECTION_SCORES", "DETECTION_CLASSES"
+    )]
     client.infer(model_name, inputs=inputs, outputs=outputs)
 
 
 if __name__ == "__main__":
-    url = sys.argv[1] if len(sys.argv) > 1 else "localhost:38001"
-    model = sys.argv[2] if len(sys.argv) > 2 else "yolo11_ensemble"
+    url = sys.argv[1] if len(sys.argv) > 1 else "localhost:54246"
+    model = sys.argv[2] if len(sys.argv) > 2 else "YOLO26_DET_PRE_YUV_ENSEMBLE"
     diagnose(url, model)

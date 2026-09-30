@@ -145,7 +145,7 @@ AIDetection/
 | 任务/告警平台 | 任务、预览地址、围栏、告警接收 | `GET_TASK_URL`、`GET_RTSP_URL`、`GET_FENCE_URL`、`UPLOAD_URL` | 完整生产流程 |
 | C++ RTSP 服务 | 解码摄像头视频，通过 gRPC 管理流并写入 SHM | `STREAM_SERVER_ADDRESS` | 完整视频流程 |
 | SAM3 | 文本提示词驱动的检测/分割 | `SAM3_URL`；可用 `SAM3_URL_OBJ` 或 YAML 的 `sam3_url_groups` 覆盖 | 配置了 SAM3 的算法或内部调用 SAM3 的检测器 |
-| Triton YOLO ensemble | 预检测和纯 YOLO 输入 | `TRITON_YOLO_URL`、`models.yaml` | 配置了 `yolo_pre_detect` 的算法 |
+| Ascend Triton YOLO ensemble | 预检测和纯 YOLO 输入 | `TRITON_PROTOCOL`、`TRITON_YOLO_GRPC_URL` / `TRITON_YOLO_URL`、`models.yaml` | 配置了 `yolo_pre_detect` 的算法 |
 | Triton 分类模型 | 对规则命中的裁剪区域复核 | `classification_configs`、`algorithm_classifiers` | 显式绑定分类器时 |
 | OpenAI 兼容视觉服务 | VL 二次确认 | `VL_*`、`algorithm_vl_config` | 全局和算法开关均开启时 |
 
@@ -155,7 +155,7 @@ AIDetection/
 
 完整服务的主路径面向 **Linux**。`StreamWorker` 当前固定使用 RTSP SHM 模式和 CPU FFmpeg 解码，Python 从 `/dev/shm/{stream_id}` 读取帧。RTSP 服务端与应用必须在同一 Linux 主机上，或能访问同一套实际共享内存文件；仅把 gRPC 地址设为另一台服务器，不能把该服务器的 SHM 自动传过来。
 
-Triton 也有独立的 SHM 传输机制。生产 YOLO 和分类客户端当前使用 `TRITON_YOLO_URL` 配合 `protocol="shm"`，SHM 失败可回退 HTTP；要真正启用 Triton SHM，Triton 容器也必须看到客户端创建的共享内存对象。
+YOLO 默认通过 gRPC 调用 Ascend Triton，不依赖与 Triton 共享内存。设 `TRITON_PROTOCOL=shm` 时，本项目使用 HTTP 管理系统 SHM，失败可回退同一 HTTP 端点；Triton 容器必须看到客户端创建的相同 SHM 对象。RTSP 的 SHM 挂载要求不受此设置影响。分类复核暂不启用。
 
 RTSP 客户端另有 JPEG-over-gRPC 模式，可用于跨机器单独联调，但主 worker 没有通过 `.env` 切换此模式的配置项。Windows 原生环境适合编辑、配置检查及部分 HTTP 图片联调；不要直接套用 Linux SHM 的生产启动方式。
 
@@ -176,7 +176,7 @@ mkdir -p logs
 
 编辑 `.env`，设置任务平台、SAM3、Triton、RTSP 服务及 VL 地址。SAM3 已适配 `ascend-sam3` 的 `/predict`；默认 `sam3_url_groups: []`，统一使用 `SAM3_URL`。如果自行配置了 URL 分组，其中的具体 URL 不会被同名环境变量替换。
 
-模板使用 `STREAM_SERVER_ADDRESS=grpc_rtsp:50051`、`TRITON_YOLO_URL=triton:38000`。这些服务名只有在相应 Docker 网络中可解析时才有效；独立部署时应填写可达地址。端口必须是从 **应用容器内** 实际访问的服务端口，不能把宿主机映射端口和容器监听端口混淆。
+模板使用 `STREAM_SERVER_ADDRESS=grpc_rtsp:50051`、`TRITON_YOLO_URL=triton-ascend:8000`、`TRITON_YOLO_GRPC_URL=triton-ascend:8001`。这些服务名只有在相应 Docker 网络中可解析时才有效；独立部署时填写可达主机地址及发布端口（上游默认 HTTP 54245、gRPC 54246）。不要混淆宿主机发布端口与容器监听端口。
 
 ### 2. 连接外部服务
 
@@ -316,8 +316,9 @@ python -c "from config.config import config; print(config.ALGORITHM_CODES)"
 | `SAM3_URL` | `http://192.168.100.75:18002/predict` | ascend-sam3 的完整 JSON 接口地址；按实际单实例/网关地址修改 |
 | `SAM3_URL_OBJ` | 自动使用 `SAM3_URL` | 兼容旧部署变量；显式设置时覆盖未分组算法的地址，也必须使用新 `/predict` 接口 |
 | `SAM3_TIMEOUT_SECONDS` | `30` | HTTP 请求超时秒数；多文本推理或排队较长时按实测调整 |
-| `TRITON_YOLO_URL` | `192.168.100.74:38000` | 当前生产 YOLO/分类的 HTTP/SHM 地址，不带 `http://`；模板用 `triton:38000` |
-| `TRITON_YOLO_GRPC_URL` | `192.168.100.74:38001` | 已定义，但当前主 worker 的 YOLO 工厂未使用 |
+| `TRITON_YOLO_URL` | `localhost:54245` | YOLO 的 HTTP/SHM 地址，不带 `http://`；模板用 `triton-ascend:8000` |
+| `TRITON_YOLO_GRPC_URL` | `localhost:54246` | YOLO 的 gRPC 地址；模板用 `triton-ascend:8001` |
+| `TRITON_PROTOCOL` | `grpc` | 生产及配置驱动的图片测试使用 `grpc` / `http` / `shm`；可按模型配置 `protocol` 覆盖 |
 | `TRITON_CLASSIFIER_GRPC_URL` | `192.168.100.74:38001` | 已定义，但当前分类器工厂未使用 |
 | `VL_ENABLED` | `true` | VL 全局开关，另需算法配置开启 |
 | `VL_API_URL` | `http://192.168.100.75:18000/v1` | OpenAI 兼容接口 base URL |
@@ -346,7 +347,7 @@ fence_algorithms:
   - {code: '8'}
 
 yolo_pre_detect:
-  - {code: '8', yolo26_ensemble: [person]}
+  - {code: '8', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
 
 algorithm_detectors:
   - {code: '8', detectors: [ZoneDetector]}
@@ -407,27 +408,76 @@ YAML 用 `yaml.safe_load` 读取，没有环境变量插值功能。不要在 `s
 
 ### 模型配置
 
-`config/models.yaml` 当前定义 `yolo26_ensemble`、`yolov5_ensemble` 和分类器配置 `resnet_smoke`。模型名称必须与 Triton 服务端的实际模型名一致，`.names` 中的有效非空行从 0 开始映射类别 ID，类别名称须与 `yolo_pre_detect` 一致。
+`config/models.yaml` 当前定义 `YOLO26_DET_PRE_YUV_ENSEMBLE` 和 `YOLO11_DET_PRE_ENSEMBLE`，生产预检绑定前者，以 NV12 直通推理；仅被算法引用的模型才会初始化客户端。`.names` 中的有效非空行从 0 开始映射类别 ID，类别名称须与 `yolo_pre_detect` 一致。原异物 `yolov5_ensemble` 和吸烟 `classifier_ensemble` 暂不启用，等待对应昇腾模型，不会被通用 COCO 模型替代。
 
 ```yaml
 yolo_model_configs:
-  - name: yolo26_ensemble
-    input_name: raw_image
+  - name: YOLO26_DET_PRE_YUV_ENSEMBLE
+    backend: ascend
+    input_name: YUV
     input_size: 640
     conf_thresh: 0.5
     iou_thresh: 0.45
     label_map_file: config/names/coco.names
+    max_detections: 300
 ```
 
-当前 YOLO 封装面向已集成预处理和后处理的 Triton ensemble：输入是 RGB、`uint8`、形状 `[1, H, W, 3]`；输出使用 `num_dets`、`detection_boxes`、`detection_scores`、`detection_classes`、`transform_metadata`。它不能直接替代任意原始 ONNX/YOLO 输出解析器。
+当前封装适配 [triton-inference-server-ascend `39511c9`](https://github.com/leon0514/triton-inference-server-ascend/tree/39511c92ae982759fbbb9d9f2d6a124142f10ab2)：生产输入 `YUV` 为 **NV12 UINT8 `[H*3/2,W,1]`，无 batch 维度**；BGR 模型仍使用 `IMAGE [H,W,3]`。输出为 `NUM_DETS [1]`、`DETECTION_BOXES [N,4]`、`DETECTION_SCORES [N]`、`DETECTION_CLASSES [N]`。检测框已是原图像素坐标，客户端不再执行 letterbox 逆变换；裁剪框和围栏计算使用真实高度 H，而不是缓冲区高度 1.5H。
 
-`conf_thresh` 用于客户端置信度过滤；`iou_thresh` 和 `output_format` 在当前封装中只为兼容保留，不改变服务端 NMS。要调整 NMS，应同步修改外部 Triton 模型配置。SHM 输出缓冲区按最多 300 个检测框预设，需与服务端输出规格一致。
+`YOLO26_DET_PRE_RGB_ENSEMBLE` 接收 BGR `IMAGE`。若切回 BGR 模型，应同时修改两份 YAML 中的模型引用和 `input_name: IMAGE`，worker 将按需转换图像。客户端不接收内部 `NV12_REF` 设备句柄。`YOLOTritonFast(backend="legacy")` 仅为旧 RGB/NHWC 协议兼容入口，生产配置不使用它。
+
+### NV12 数据路径
+
+```text
+RTSP 解码 → NV12 → SHM → Python
+                         ├─ NV12 → Triton YUV ensemble（默认 gRPC）
+                         └─ 按需生成并缓存 BGR
+                               ├─ JPEG + Base64 → SAM3 HTTP /predict
+                               ├─ 需要图像的规则、分类和 VL 复核
+                               └─ OSD 绘图及告警上传
+```
+
+- worker 显式请求 `PIXEL_NV12`；连续内存的 NV12 输入只增加末尾通道维度，不经 BGR 或 JPEG 中转后送给 YOLO。
+- 无就绪任务、YOLO 空结果且后续规则不需要图像时，不执行 BGR 转换。空检测仍进入规则分析，保留脱岗等时序算法的更新行为。
+- 普通几何规则仅接收框、围栏及真实宽高。分发器只在检测器签名包含 `frame` 参数时通过 `frame_provider` 获取 BGR，因此移动打电话、睡岗等图像相关规则仍能工作。
+- SAM3、图像规则、复核和绘图复用同一帧的 BGR 缓存，原生 NV12 每帧至多转换一次。SAM3 请求本身仍使用 JPEG/Base64，接口未改变。
+- 依据实际 SHM 元数据解释格式，不能只相信启动请求。同 URL 复用的 BGR/I420/YUYV422 流会按需兼容转换，并记录回退日志。要获得直通收益，需协调已有使用方重开为 NV12，不能直接停止其他业务共享的流。
+- NV12 必须为偶数宽高。`predict_nv12()` 接收二维紧凑缓冲区或末尾单通道数组，`predict()` 保持 BGR 图片入口，对 YUV 模型按需转换。奇数尺寸 BGR 图片明确报错，不自动缩放而改变坐标；可以使用 BGR ensemble。
+
+这是减少颜色转换和传输字节量，不是端到端零拷贝：SHM 读帧仍返回独立副本，gRPC 和设备传输仍有成本。实际吞吐、色彩一致性和识别效果需在目标主机验证。
+
+`conf_thresh` 用于客户端置信度过滤，不能恢复已被服务端过滤的框；`iou_thresh` 和 `output_format` 仅为兼容保留，不改变后端行为。YOLO11 NMS 在服务端配置，YOLO26 已输出端到端检测结果。`max_detections` 决定 SHM 输出容量，默认 300，必须不小于服务端 `max_detections`；按 `NUM_DETS` 读取有效结果。
+
+### Ascend Triton 部署切换
+
+1. 在 aarch64 / 310P3 主机按[上游部署说明](https://github.com/leon0514/triton-inference-server-ascend/blob/39511c92ae982759fbbb9d9f2d6a124142f10ab2/README.md)准备 CANN、匹配架构的 Triton 运行环境并编译后端。上游声明在 CANN 8.2 验证，本项目没有核验目标主机当前的驱动/CANN 版本。
+2. 提供 `.om` 权重。默认 YOLO26 AIPP 链需要 `workspace/models/YOLO26_DET_PRE/1/yolo26s.om`；模型和 `.so` 不由 AIDetection 提供。在 `workspace/models_to_load.txt` 加载 `YUV_640_LETTERBOX_PREPROCESS`、`YOLO26_DET_PRE`、`YOLO26_DET_PRE_POSTPROCESS`、`YOLO26_DET_PRE_YUV_ENSEMBLE`，不要让缺失的 YOLO11 / RGB 变体影响服务就绪。RTSP 服务端需支持 SHM NV12 输出，优先使用解码器直接输出 NV12 的版本。
+3. 独立启动新后端，核对真实发布端口。上游默认 HTTP 54245、gRPC 54246；同一 Docker 网络内使用服务名 `triton-ascend` 和容器端口 8000/8001。
+4. 修改 AIDetection `.env` 并重启应用，例如新后端继续部署在原主机时：
+
+```dotenv
+TRITON_PROTOCOL=grpc
+TRITON_YOLO_URL=192.168.100.74:54245
+TRITON_YOLO_GRPC_URL=192.168.100.74:54246
+```
+
+这里的主机地址需要按实际部署调整；`.env` 不跟随 Git 分发，不应继续保留旧端口。默认不引入 Triton Compose；要通过 `include` 统一编排，显式设置 `TRITON_COMPOSE=../triton-inference-server-ascend/docker-compose.yml`，并按上游要求提供 Toolkit、模型挂载等环境变量，先运行 `docker compose config` 核对展开结果。
+
+```bash
+curl -f http://192.168.100.74:54245/v2/health/ready
+curl -f http://192.168.100.74:54245/v2/models/YOLO26_DET_PRE_YUV_ENSEMBLE/ready
+python tests/local/test_triton.py -i assets/images/test.jpg --protocol grpc --url 192.168.100.74:54246
+```
+
+本项目 `shm` 是 **HTTP + POSIX 系统共享内存**，与上游示例的 gRPC 管理通道不同，必须使用 HTTP 地址。上游 Compose 的 `ipc: host` 并不自动解决本项目 `/dev/shm/aidetection:/dev/shm` 的目录隔离：只有两端实际看到同一 SHM 对象才能注册成功。默认 gRPC 无需修改任何 RTSP SHM 挂载，也无需为 AIDetection 容器开放 NPU 设备权限。
+
+暂停的是旧异物 YOLOv5 路径和吸烟分类复核，不会自动删除原有 SAM3 吸烟/异物规则或改变算法允许列表。后续提供专用昇腾模型时，需核对标签与输入输出后再单独接入。
 
 ### 分类器与 VL 复核
 
 规则违规先进入分类器，再进入 VL；它们都不会自动对整幅图像持续巡检。
 
-当前分类器仅绑定到未启用的算法 `1000`，所以默认允许列表中的算法不会调用 `resnet_smoke`。例如需要给吸烟算法接入分类复核，可在确认模型已部署后，将以下条目加入 `algorithm_classifiers`：
+当前 `classification_configs` 和 `algorithm_classifiers` 均为空。新后端没有分类模型，旧分类客户端代码仅作保留，不能直接调用新 YOLO 检测模型完成吸烟分类。未来需先部署模型并按其真实输入输出适配分类客户端，再添加配置，例如：
 
 ```yaml
 algorithm_classifiers:
@@ -577,16 +627,17 @@ python tests/local/test_local_image.py -a 8 -o assets/results
 
 ### 4. Triton 独立联调
 
-`test_triton.py` 默认 URL 是 `localhost:38000`，不会自动取 `.env` 中的 `TRITON_YOLO_URL`，应显式传入地址：
+`test_triton.py` 默认使用 gRPC `localhost:54246`，独立 CLI 不自动读取 `.env` 的端点。HTTP/SHM 默认使用 `localhost:54245`，也可显式指定：
 
 ```bash
 python tests/local/test_triton.py --help
-python tests/local/test_triton.py -i assets/images/test.jpg --url triton-server:38000 --model yolo26_ensemble --classes 0 -n 20 --save assets/results/triton_test.jpg
+python tests/local/test_triton.py -i assets/images/test.jpg --url triton-server:54246 --protocol grpc --model YOLO26_DET_PRE_YUV_ENSEMBLE --classes 0 -n 20 --save assets/results/triton_test.jpg
+python tests/local/test_triton.py -i assets/images/test.jpg --url triton-server:54245 --protocol http
 ```
 
 该脚本默认用 COCO 类别映射；测试自定义类别模型时应使用按 `models.yaml` 加载标签的图片脚本，或自行给 `YOLOTritonFast` 传入 `label_map`。
 
-要明确选择 HTTP，可在调用 `YOLOTritonFast` 时传 `protocol="http"`；当前两个本地 CLI 脚本的 `--no-shm` 尚未正确传递为协议选择。通用 Triton 客户端还有独立的连通性/推理测试：
+要明确选择 HTTP，可传 `--protocol http`。`test_triton.py --no-shm` 会选择 HTTP；配置驱动的 `test_local_image.py --no-shm` 仅将 SHM 改为 HTTP，原本使用 gRPC 时保持不变。通用 Triton 客户端还有独立的连通性/推理测试：
 
 ```bash
 python src/triton_client/test_client.py --help
@@ -594,7 +645,81 @@ python src/triton_client/test_client.py --help
 
 其接口与其他示例见 `src/triton_client/README.md`，运行测试需要实际 Triton 服务。
 
-### 5. RTSP 和 VL 联调入口
+### 5. RTSP 最新接口与昇腾主机部署
+
+拉流客户端对齐 [rtspGrpcServer 提交 `7abe4fd`](https://github.com/dongxuecheng/rtspGrpcServer/tree/7abe4fd824956c003e3a45b32df31c0fcca4adf0)（2026-09-30 核对的 `master`），与 ascend-sam3、Ascend Triton 检测接口独立适配。
+
+| 上游变化 | 本项目行为 |
+| --- | --- |
+| `StartRequest.pixel_format` | 支持 BGR、NV12、I420、YUYV422；生产 worker 显式请求 NV12 |
+| 动态 SHM 分配和扩容 | 结构偏移取 `GetShmLayout`，每路槽位尺寸按实际文件长度计算；检测文件身份或大小变化后重新映射 |
+| `FrameResponse.corrupted` / SHM `frame_flags` | `read_ex()` 返回逐帧花屏标记；worker 丢弃已标记帧，不调用推理、规则或更新任务调度时间 |
+| 流健康指标 | `check_stream()` / `list_streams()` 返回 `fps`、`media_lag_ms`、`corrupted_frames`、`glitch_ratio`、`pixel_format` |
+| 同 URL 流复用 | 按实际帧元数据解释图像；NV12 直通 YOLO，其他格式或 BGR 消费分支按需转换 |
+
+当前 SHM 为 **3 槽位、64 字节对齐**，元数据含 52 字节有效字段；布局为 `slot_size = align_up(payload_offset + capacity, alignment)`、`total_size = slot_count * slot_size + 8`。`GetShmLayout` 返回的默认容量不代表某一路流的实际容量。客户端返回独立像素副本，并在拷贝后复核槽位序列锁，避免下游继续引用正在被覆盖的 mmap。它不是端到端零拷贝。
+
+**aarch64 / 310P3 部署**：worker 继续使用 `DECODER_CPU_FFMPEG`，不要求 NVIDIA。NV12 是帧格式选项，不代表已经接入昇腾 DVPP 硬件解码或零拷贝推理。已正常运行的拉流服务无需更换，只需升级到对应协议版本并核对地址、挂载。
+
+若通过本项目的 `include` 引入上游 CPU-only Compose，在 `.env` 设置：
+
+```dotenv
+GRPC_RTSP_COMPOSE=../rtspGrpcServer/docker-compose.cpu.yml
+STREAM_SERVER_ADDRESS=grpc_rtsp_cpu:50051
+SHM_NAMESPACE=aidetection
+```
+
+先按上游 CPU 部署说明准备与 aarch64 匹配的二进制及运行文件，再在 Linux 上验证：
+
+```bash
+mkdir -p /dev/shm/aidetection
+docker compose config
+docker compose up -d
+```
+
+检查渲染后的两个服务是否都将宿主机 `/dev/shm/aidetection` 挂到容器 `/dev/shm`。上游 CPU Compose 的命名空间默认值是 `grpc_rtsp`，本项目是 `aidetection`，不能分别沿用不同默认值。独立启动的两个 Compose 项目不一定共享网络，此时使用可达的主机地址和实际映射端口，或显式配置共同网络；仅改服务名不保证连通。跨主机只支持 JPEG-over-gRPC，生产 worker 的 SHM 模式仍要求同机共享文件。
+
+**客户端接口示例**（从项目根目录运行，`PYTHONPATH=src`）：
+
+```python
+import os
+from dotenv import load_dotenv
+from stream.remote_capture import RTSPClient, PIXEL_BGR, PIXEL_NV12
+from stream.frame import FrameImages
+
+load_dotenv()
+with RTSPClient(os.environ["STREAM_SERVER_ADDRESS"]) as client:
+    sid = client.start_stream(os.environ["TEST_RTSP_URL"],
+                              use_shared_mem=True, pixel_format=PIXEL_NV12)
+    if not sid:
+        raise RuntimeError("启动视频流失败")
+    try:
+        for _ in range(20):
+            ts, frame, corrupted = client.read_ex(sid, blocking=True, timeout_ms=1000)
+            if frame is None or corrupted:
+                continue
+            meta = client.get_last_frame_meta(sid) or {}
+            images = FrameImages(frame, meta.get("pix_fmt", PIXEL_BGR), meta)
+            print(ts, images.width, images.height, images.nv12().shape, client.check_stream(sid))
+            break
+        else:
+            raise RuntimeError("未收到有效帧，请检查服务状态及 SHM 挂载")
+    finally:
+        client.stop_stream(sid)
+```
+
+`TEST_RTSP_URL` 是这个示例使用的环境变量，不是生产配置字段；用独立测试摄像头地址，避免停止同 URL 复用的生产流。测试跨主机 JPEG 时改为 `use_shared_mem=False`。`read()` 保持 `(timestamp, frame)` 二元返回，`read_ex()` 返回三元组并**不自动过滤花屏或转换 YUV**；`stream_frames_ex()` 提供相同的三元返回，仅适用于 gRPC JPEG。SHM 时间戳是服务端单调时钟毫秒，JPEG 的首个返回值是 `frame_seq`，不能统一当作 Unix 时间。健康指标为诊断数据，`corrupted=False` 也不保证画面绝对无损。
+
+**无需远端服务的回归测试**：
+
+```bash
+python -m pip install pytest
+python -m pytest tests/unit -q
+```
+
+覆盖协议字段、动态 mmap、扩容和文件身份变化、序列锁、YUV 转换、花屏过滤、旧读帧接口及 SAM3。合成帧与 Mock 测试不能替代 310P3 Linux 实机验收；部署后还应验证多路并发、实际分辨率切换、服务重启、信号量通知及断流恢复。
+
+### 6. 其他 RTSP 和 VL 联调入口
 
 `src/stream/remote_capture.py` 末尾包含 JPEG 和 SHM 两种示例，但其中服务器和摄像头地址写在源码内，运行前必须替换为自己的测试地址。该示例不读取 `.env` 的流地址：
 
@@ -701,11 +826,11 @@ python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. src/stream/st
 | Docker 镜像启动后找不到 `main.py` | 运行镜像没有内置源码，需挂载项目目录到 `/app` |
 | `grpc_rtsp` 或 `triton` 无法解析 | 服务没有加入对应 Docker 网络，或外部 include 仍为空；调整服务网络或填写实际地址 |
 | gRPC 连接成功但持续没有帧 | 检查 RTSP 是否可用、服务端是否解码、双方 SHM 挂载和权限是否一致；远程主机的 SHM 不会通过 gRPC 自动传输 |
-| 多路高分辨率视频运行异常 | 检查宿主机 `/dev/shm` 容量。8 槽 RGB 缓冲粗略需要 `宽 × 高 × 3 × 8` 字节/流，1080p 约 47.5 MiB/流，另加对齐和 Triton 缓冲；bind mount 场景仅改 Compose `shm_size` 无效 |
+| 多路高分辨率视频运行异常 | 检查宿主机 `/dev/shm` 容量。3 槽 NV12 缓冲约 `宽 × 高 × 1.5 × 3` 字节/流，1080p 约 8.9 MiB/流；BGR 约两倍。另加对齐、扩容余量及 Triton 缓冲；bind mount 场景仅改 Compose `shm_size` 无效 |
 | 改 `.env` 后仍访问旧 SAM3 地址 | 检查是否还显式设置旧 `SAM3_URL_OBJ`，以及 `sam3_url_groups` 中是否保留固定 URL |
 | SAM3 返回 404 / 422，或 mask 不生效 | 确认部署的是 ascend-sam3 的 `/predict`，请求使用 `image/class_names/confidence/return_mask`；mask 必须带正确的宽高，不可直接当作 COCO counts |
-| 改 gRPC URL 变量后 YOLO/分类仍走 HTTP/SHM | 当前客户端工厂使用 `TRITON_YOLO_URL` 和固定 `protocol="shm"`，两个 gRPC 地址变量尚未接入主流程 |
-| `--no-shm` 后仍尝试共享内存 | 本地脚本传入的 `use_shared_memory` 参数没有参与 `YOLOTritonFast` 的协议选择；需由调用处显式指定 `protocol="http"` |
+| 改 gRPC 地址后请求仍走 HTTP/SHM | 检查 `TRITON_PROTOCOL` 及每个模型的 `protocol` 覆盖；本项目 SHM 走 HTTP 地址而非上游示例的 gRPC 地址 |
+| SHM 注册失败 | 检查 Triton 能否看到应用创建的同一个 SHM 对象；HTTP/gRPC 无需共享此目录，可先切换验证协议 |
 | 没有 worker 或任务被跳过 | 检查平台 `data`、算法允许列表、设备 IP/通道、预览接口返回的 `msg` 和 RTSP 地址 |
 | 平台请求短暂失败后流被移除 | `TaskManager` 在请求前清空任务缓存，失败会留下空列表，后续编排可能停止 worker；当前不保证保留上一轮成功任务 |
 | 同一任务 ID 的配置修改未生效 | 编排器按任务 ID 集合判断是否调用 `update_tasks`；集合不变时普通字段未必刷新。RTSP 地址和围栏有独立更新路径，其他变更可重启应用确保加载 |
@@ -714,6 +839,6 @@ python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. src/stream/st
 | 睡岗等算法单张图片无结果 | 存在时序门槛。睡岗默认连续静止阈值为 50 次，实际耗时取决于分析间隔及推理速度 |
 | 灭火器算法 `53` 未按预期去重 | 当前 `alert_dedup` 中相关注释对应的是 `63` 条目，不会作用于 `53`；应按实际业务核对算法码 |
 | 规则命中但没有上传 | 检查分类/VL 过滤、去重冷却、队列丢弃、HTTP/业务响应；上传失败没有自动重试 |
-| 本地脚本找不到图片或模型 | 默认图片路径有 `asserts` 拼写；显式 `-i` 或配置 `test_local`。`yolo-only` 对未配置预检的算法会回退旧模型名 `yolo11_plan`，需核对服务端 |
+| 本地脚本找不到图片或模型 | 显式传 `-i` 或配置 `test_local`。`yolo-only` 对未配置预检的算法使用 `YOLO26_DET_PRE_YUV_ENSEMBLE`，需要加载对应服务端模型；YUV 图片入口要求偶数宽高 |
 
 主路径和脚本会访问真实服务，生产启动也会向平台上报告警。首次联调应使用明确的测试任务和对应的接口地址，通过日志与输出图片逐步确认结果。

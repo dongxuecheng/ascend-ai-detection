@@ -194,21 +194,28 @@ def _get_yolo_client(model_name: str):
     if model_name not in _yolo_client_cache:
         from detect.triton_client_fast import YOLOTritonFast
         model_cfg = config.YOLO_MODEL_CONFIGS.get(model_name, {})
+        protocol = model_cfg.get("protocol", config.TRITON_PROTOCOL)
+        if not _use_shm and protocol == "shm":
+            protocol = "http"
+        endpoint = config.triton_endpoint(protocol)
         client = YOLOTritonFast(
-            url=config.TRITON_YOLO_URL,
+            url=endpoint,
             model_name=model_name,
             input_size=model_cfg.get("input_size", 640),
             conf_thresh=model_cfg.get("conf_thresh", 0.5),
             iou_thresh=model_cfg.get("iou_thresh", 0.45),
             label_map=model_cfg.get("label_map"),
-            input_name=model_cfg.get("input_name", "images"),
+            input_name=model_cfg.get("input_name", "IMAGE"),
             output_name=model_cfg.get("output_name", "output0"),
             output_format=model_cfg.get("output_format", "yolo_v8_v11"),
             use_shared_memory=_use_shm,
+            protocol=protocol,
+            backend=model_cfg.get("backend", "ascend"),
+            max_detections=model_cfg.get("max_detections", 300),
             warmup=True
         )
         _yolo_client_cache[model_name] = client
-        logger.info(f"YOLO 客户端初始化: {model_name} @ {config.TRITON_YOLO_URL} "
+        logger.info(f"YOLO 客户端初始化: {model_name} @ {endpoint} "
                     f"(classes={client.num_classes}, input_size={client.input_size}, "
                     f"conf={client.conf_thresh}, iou={client.iou_thresh}, shm={_use_shm})")
     return _yolo_client_cache[model_name]
@@ -263,12 +270,12 @@ def yolo_pre_detect(frame: np.ndarray, algo_code: str) -> Optional[List[Box]]:
 
 
 def detect_yolo_only(frame: np.ndarray, algo_code: str) -> List[Box]:
-    """仅用 YOLO 检测（取该算法配置的第一个模型，无配置则用默认 yolo11_plan）"""
+    """仅用 YOLO 检测（取该算法配置的第一个模型，无配置则用默认 NV12 ensemble）。"""
     pre_config = config.ALGM_PRE_YOLO_MODEL_DETECT_CLASSES.get(algo_code, {})
     if pre_config:
         model_name = list(pre_config.keys())[0]
     else:
-        model_name = "yolo11_plan"
+        model_name = "YOLO26_DET_PRE_YUV_ENSEMBLE"
 
     try:
         client = _get_yolo_client(model_name)

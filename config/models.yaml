@@ -1,25 +1,22 @@
 _comment: 模型推理配置（YOLO / 分类模型）
 
 yolo_model_configs:
-  - name: yolo26_ensemble
-    input_name: raw_image
+  - name: YOLO26_DET_PRE_YUV_ENSEMBLE
+    backend: ascend
+    input_name: YUV
     input_size: 640
     conf_thresh: 0.5
     iou_thresh: 0.45
     label_map_file: config/names/coco.names
-  - name: yolov5_ensemble
-    input_name: raw_image
+    max_detections: 300
+  - name: YOLO11_DET_PRE_ENSEMBLE
+    backend: ascend
+    input_name: IMAGE
     input_size: 640
     conf_thresh: 0.5
     iou_thresh: 0.45
-    label_map_file: config/names/yolov5_foreign_objects.names
+    label_map_file: config/names/coco.names
+    max_detections: 300
 
-classification_configs:
-  - name: resnet_smoke
-    model_name: classifier_ensemble
-    input_name: raw_image
-    output_name: output
-    labels: [smoking, normal]
-    conf_thresh: 0.5
-    target_class: smoking
-    expand_ratio: 2.0
+# 新后端尚无异物 YOLOv5 和吸烟分类模型，提供昇腾模型后再配置。
+classification_configs: []

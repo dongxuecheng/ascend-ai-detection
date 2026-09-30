@@ -39,8 +39,8 @@ services:
     # 或在 .env 中使用 host.docker.internal / 具体宿主机 IP。
     # 注意：使用 bind mount /dev/shm/<namespace>:/dev/shm 时，容器内实际容量由宿主机 /dev/shm 决定，
     # shm_size 字段不再生效。请直接在宿主机调整：mount -o remount,size=32G /dev/shm
-    # RTSP 共享内存估算：每路流 ≈ 宽*高*3*8(slot) + 对齐开销；8 路 1080p 约 400MB，4K 约 1.6GB
-    # 建议生产环境至少 32G，并同时调大宿主机 /dev/shm
+    # 最新 RTSP 服务按实际帧尺寸动态分配 3 个槽位，默认 NV12 每路约 宽*高*1.5*3 字节。
+    # 8 路 1080p 约 71 MiB，尚需为扩容、其他共享内存使用方及峰值预留容量。
     restart: unless-stopped
     # 所有应用配置统一从项目根目录 .env 文件加载并注入容器
     # 这样 docker-compose.yml 本身不需要维护具体配置值，修改 .env 即可

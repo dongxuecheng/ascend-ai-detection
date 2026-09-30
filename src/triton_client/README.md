@@ -14,7 +14,7 @@
 ## 目录结构
 
 ```
-workspace/triton_client/
+src/triton_client/
 ├── __init__.py        # 导出 TritonClient、TritonClientError
 ├── client.py          # 核心封装实现
 ├── example.py         # 三协议调用示例
@@ -26,7 +26,7 @@ workspace/triton_client/
 ## 依赖
 
 ```bash
-pip install numpy pillow tritonclient[all]
+pip install numpy opencv-python 'tritonclient[all]'
 ```
 
 或按协议按需安装：
@@ -44,93 +44,95 @@ pip install tritonclient[http]
 |------|----------|------|----------|
 | `grpc` | gRPC | 吞吐高、延迟低，Triton 默认推荐 | 生产高并发推理 |
 | `http` | REST | 调试方便、可读性好 | 快速验证、轻量调用 |
-| `shm` | HTTP + 系统共享内存 | 避免输入/输出数据在进程间拷贝 | 大图像、高分辨率 mask、性能敏感 |
+| `shm` | HTTP + 系统共享内存 | 避免图像通过网络传输；仍有主机内存拷贝 | 大图像、高分辨率 mask、性能敏感 |
 
 ## 快速开始
 
-以下脚本默认在 `workspace` 目录下执行。
+从 AIDetection 根目录设置 `PYTHONPATH=src` 后运行。示例适配 Ascend Triton 的 BGR ensemble。此处 SHM 使用 HTTP 端点 54245，与上游基于 gRPC 的 SHM 客户端不同。
 
 ```python
 import numpy as np
-from PIL import Image
+import cv2
 from triton_client import TritonClient
 
-img = Image.open("images/bus.jpg").convert("RGB")
-img_np = np.array(img)[np.newaxis, ...]  # [1, H, W, 3]
+img_np = cv2.imread("images/bus.jpg")  # BGR [H, W, 3]
 
 outputs = [
-    "num_dets",
-    "detection_boxes",
-    "detection_scores",
-    "detection_classes",
-    "transform_metadata",
+    "NUM_DETS",
+    "DETECTION_BOXES",
+    "DETECTION_SCORES",
+    "DETECTION_CLASSES",
 ]
 
 # gRPC
-with TritonClient("localhost:48001", protocol="grpc") as client:
+with TritonClient("localhost:54246", protocol="grpc") as client:
     result = client.infer(
-        model_name="yolov5_ensemble",
-        inputs={"raw_image": img_np},
+        model_name="YOLO26_DET_PRE_ENSEMBLE",
+        inputs={"IMAGE": img_np},
         outputs=outputs,
     )
-    print(result["num_dets"])
+    print(result["NUM_DETS"])
 
 # HTTP
-with TritonClient("localhost:48000", protocol="http") as client:
+with TritonClient("localhost:54245", protocol="http") as client:
     result = client.infer(
-        model_name="yolov5_ensemble",
-        inputs={"raw_image": img_np},
+        model_name="YOLO26_DET_PRE_ENSEMBLE",
+        inputs={"IMAGE": img_np},
         outputs=outputs,
     )
 
 # 共享内存（需要预先指定输出 shape 和 dtype）
 output_specs = {
-    "num_dets": ([1, 1], "int32"),
-    "detection_boxes": ([1, 300, 4], "float32"),
-    "detection_scores": ([1, 300], "float32"),
-    "detection_classes": ([1, 300], "int32"),
-    "transform_metadata": ([1, 6], "float32"),
+    "NUM_DETS": ([1], "int32"),
+    "DETECTION_BOXES": ([300, 4], "float32"),
+    "DETECTION_SCORES": ([300], "float32"),
+    "DETECTION_CLASSES": ([300], "int32"),
 }
 
-with TritonClient("localhost:48000", protocol="shm") as client:
+with TritonClient("localhost:54245", protocol="shm") as client:
     result = client.infer(
-        model_name="yolov5_ensemble",
-        inputs={"raw_image": img_np},
+        model_name="YOLO26_DET_PRE_ENSEMBLE",
+        inputs={"IMAGE": img_np},
         outputs=outputs,
         output_specs=output_specs,
     )
 ```
+
+## NV12 生产路径
+
+生产默认调用 `YOLO26_DET_PRE_YUV_ENSEMBLE`，输入是 `YUV UINT8 [H*3/2,W,1]`。
+RTSP SHM 返回二维紧凑 NV12 时，增加末尾通道轴即可；连续数组不需要颜色转换：
+
+```python
+from detect.triton_client_fast import YOLOTritonFast
+
+client = YOLOTritonFast(model_name="YOLO26_DET_PRE_YUV_ENSEMBLE", protocol="grpc")
+# nv12 是 RTSP 获取的原始 NV12 数组，不是 BGR 或 I420。
+boxes = client.predict_nv12(nv12)
+```
+
+`predict(bgr)` 是兼容图片测试的入口，会在调用 YUV 模型时执行 BGR → NV12；不要把它用于原始 NV12 视频路径。NV12 图像宽高必须为偶数。检测框已在原图坐标系内，不需要对缓冲区高度作比例缩放。
+
+`example.py`、`benchmark.py` 默认使用 YUV ensemble，按模型名选择 `YUV` / `IMAGE`。图片测试会预先转换图像，不能代表真正的 NV12 拉流性能。benchmark 的计时只覆盖推理调用，不包含图片读取和这次预转换。
 
 ## 动态输出处理
 
 本项目的检测后处理后端均返回**动态数量**的检测结果：`num_dets` 表示当前图片实际检测到的目标数，其余输出张量按最大检测数分配。读取时建议按 `num_dets` 切片：
 
 ```python
-num_dets = int(result["num_dets"][0, 0])
-boxes = result["detection_boxes"][0, :num_dets]   # [N, 4]
-scores = result["detection_scores"][0, :num_dets]  # [N]
-classes = result["detection_classes"][0, :num_dets] # [N]
+num_dets = int(result["NUM_DETS"][0])
+boxes = result["DETECTION_BOXES"][:num_dets]   # [N, 4]
+scores = result["DETECTION_SCORES"][:num_dets]  # [N]
+classes = result["DETECTION_CLASSES"][:num_dets] # [N]
 ```
 
-分割模型还会返回 `detection_masks`、`mask_offsets`、`mask_shapes`，可按 `num_dets` 逐目标取出对应 mask：
-
-```python
-masks = result["detection_masks"][0]
-offsets = result["mask_offsets"][0]
-shapes = result["mask_shapes"][0]
-
-for i in range(num_dets):
-    h, w = shapes[i]
-    off = offsets[i]
-    if h > 0 and w > 0 and off >= 0:
-        mask = masks[off:off + h * w].reshape(h, w)
-```
+Ascend YOLO 检测 ensemble 不返回分割 mask 或变换矩阵；框已还原为输入图像坐标。SAM3 分割走独立客户端。
 
 ## API 说明
 
 ### `TritonClient(url, protocol="http", verbose=False)`
 
-- `url`：服务端地址，例如 `localhost:48001`。
+- `url`：服务端地址，例如 `localhost:54246`。
 - `protocol`：协议类型，可选 `"grpc"`、`"http"`、`"shm"`。
 - `verbose`：是否打印底层请求日志。
 
@@ -151,8 +153,8 @@ for i in range(num_dets):
 
 ```python
 {
-    "num_dets": ([1, 1], "int32"),
-    "detection_boxes": ([1, 300, 4], "float32"),
+    "NUM_DETS": ([1], "int32"),
+    "DETECTION_BOXES": ([300, 4], "float32"),
 }
 ```
 
@@ -190,41 +192,41 @@ inputs = {
 
 ## 运行示例
 
-在 `workspace` 目录下执行：
+在 AIDetection 根目录执行（请指定实际图片）：
 
 ```bash
-python3 triton_client/example.py --protocol grpc
-python3 triton_client/example.py --protocol http
-python3 triton_client/example.py --protocol shm
+python3 src/triton_client/example.py --protocol grpc
+python3 src/triton_client/example.py --protocol http
+python3 src/triton_client/example.py --protocol shm
 ```
 
 也支持指定模型和图片：
 
 ```bash
-python3 triton_client/example.py --protocol grpc --model yolo11_ensemble --image images/zidane.jpg
+python3 src/triton_client/example.py --protocol grpc --model YOLO11_DET_PRE_ENSEMBLE --image images/zidane.jpg
 ```
 
 ## 测试
 
 ```bash
 # 单元测试（无需 Triton 服务）
-python3 triton_client/test_client.py
+python3 src/triton_client/test_client.py
 
 # 集成测试（需要本地 Triton 服务正在运行）
-python3 triton_client/test_client.py --integration
+python3 src/triton_client/test_client.py --integration
 ```
 
-集成测试默认连接 `localhost:48001` (gRPC) 和 `localhost:48000` (HTTP/SHM)，并调用 `yolov5_ensemble` 模型，可在 `test_client.py` 中按需修改。
+集成测试默认连接 `localhost:54246` (gRPC) 和 `localhost:54245` (HTTP/SHM)，并调用 `YOLO26_DET_PRE_YUV_ENSEMBLE` 模型，可在 `test_client.py` 中按需修改。
 
 ## 性能测试
 
 ```bash
-python3 triton_client/benchmark.py --protocol grpc --count 100 --warmup 10
-python3 triton_client/benchmark.py --protocol http --count 100 --warmup 10
-python3 triton_client/benchmark.py --protocol shm --count 100 --warmup 10
+python3 src/triton_client/benchmark.py --protocol grpc --count 100 --warmup 10
+python3 src/triton_client/benchmark.py --protocol http --count 100 --warmup 10
+python3 src/triton_client/benchmark.py --protocol shm --count 100 --warmup 10
 ```
 
-输出示例：
+输出格式示例（以下数字不是 Ascend 实测结果）：
 
 ```
 ========== Benchmark Results ==========

@@ -3,13 +3,13 @@
 本地 Triton YOLO 推理测试脚本
 
 用法示例：
-    # 默认使用 config 中的 yolo11_plan 测试单张图
+    # 默认使用 YOLO26_DET_PRE_YUV_ENSEMBLE，图片按需转为 NV12
     python tests/local/test_triton.py -i assets/images/test.jpg
 
     # 指定模型、尺寸、关闭共享内存
     python tests/local/test_triton.py -i assets/images/test.jpg \
-        --url localhost:38000 \
-        --model yolo11_plan \
+        --url localhost:54245 \
+        --model YOLO11_DET_PRE_ENSEMBLE \
         --input-size 640 \
         --no-shm
 
@@ -72,8 +72,9 @@ def draw_boxes(frame: np.ndarray, boxes) -> np.ndarray:
 def main():
     parser = argparse.ArgumentParser(description="Triton YOLO 本地测试")
     parser.add_argument("-i", "--image", required=True, help="输入图片路径")
-    parser.add_argument("--url", default="localhost:38000", help="Triton HTTP 地址")
-    parser.add_argument("--model", default="yolo26_ensemble", help="模型名（Triton ensemble）")
+    parser.add_argument("--url", default=None, help="Triton 地址；默认 gRPC localhost:54246，HTTP/SHM localhost:54245")
+    parser.add_argument("--protocol", choices=["grpc", "http", "shm"], default="grpc")
+    parser.add_argument("--model", default="YOLO26_DET_PRE_YUV_ENSEMBLE", help="Ascend ensemble 模型名；图片输入按需转 NV12")
     parser.add_argument("--input-size", type=int, default=640, help="输入尺寸")
     parser.add_argument("--conf", type=float, default=0.5, help="置信度阈值")
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU 阈值")
@@ -86,9 +87,12 @@ def main():
     parser.add_argument("-n", "--iterations", type=int, default=1, help="推理轮数（用于压测）")
     parser.add_argument("--no-shm", action="store_true", help="关闭共享内存，使用 HTTP numpy 传输")
     parser.add_argument("--save", default=None, help="保存绘制结果图的路径")
-    parser.add_argument("--input-name", default="raw_image", help="输入 tensor 名（ensemble 固定为 raw_image）")
+    parser.add_argument("--input-name", default=None, choices=["IMAGE", "YUV"], help="默认按模型名选择 IMAGE / YUV")
     parser.add_argument("--output-name", default="detection_boxes", help="输出 tensor 名（ensemble 固定，此参数仅保留兼容）")
     args = parser.parse_args()
+    if args.no_shm:
+        args.protocol = "http"
+    args.url = args.url or ("localhost:54246" if args.protocol == "grpc" else "localhost:54245")
 
     if not os.path.isfile(args.image):
         logger.error(f"图片不存在: {args.image}")
@@ -116,6 +120,7 @@ def main():
         output_name=args.output_name,
         output_format=args.output_format,
         use_shared_memory=not args.no_shm,
+        protocol=args.protocol,
         warmup=True,
     )
 

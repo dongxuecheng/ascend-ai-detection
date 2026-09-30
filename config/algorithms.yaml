@@ -167,21 +167,21 @@ use_yolo_boxes:
 
 # YOLO 预检测配置：模型详细参数已迁移到 config/models.yaml
 yolo_pre_detect:
-- {code: '0', yolo26_ensemble: [person]}
-- {code: '10', yolo26_ensemble: [person]}
-- {code: '8', yolo26_ensemble: [person]}
-- {code: '14', yolo26_ensemble: [person]}
-- {code: '32', yolo26_ensemble: [person]}
-- {code: '34', yolo26_ensemble: [person]}
-# - {code: '38', yolo26_ensemble: [person]}
-- {code: '57', yolo26_ensemble: [person]}
-- {code: '52', yolo26_ensemble: [person]}
-- {code: '53', yolo26_ensemble: [person]}
-- {code: '56', yolo26_ensemble: [person]}
-- {code: '58', yolo26_ensemble: [person]}
-- {code: '60', yolo26_ensemble: [person]}
-- {code: '61', yolo26_ensemble: [person]}
-# - {code: '50', yolov5_ensemble: [dakuai]}
+- {code: '0', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '10', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '8', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '14', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '32', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '34', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+# - {code: '38', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '57', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '52', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '53', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '56', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '58', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '60', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+- {code: '61', YOLO26_DET_PRE_YUV_ENSEMBLE: [person]}
+# 异物 YOLOv5 暂不启用，等待对应昇腾模型；不能用 COCO YOLO 替代 dakuai 类别。
 
 
 algorithm_detectors:
@@ -254,8 +254,8 @@ full_frame_algorithms:
 - {code: '57'}
 
 # 算法码 -> 需要调用的分类器名称列表（分类模型定义见 config/models.yaml）
-algorithm_classifiers:
-- {code: '1000', classifiers: [resnet_smoke]}
+# 吸烟分类复核暂不启用，等待对应昇腾模型。
+algorithm_classifiers: []
 
 alert_dedup:
 - {code: '0', enabled: true, cooldown_seconds: 300, iou_thresh: 0.5}

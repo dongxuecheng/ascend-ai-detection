@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from triton_client import TritonClient, TritonClientError
 from triton_client.client import _triton_type
+from utils.image_formats import bgr_to_nv12
 
 
 class TestTypeConversion(unittest.TestCase):
@@ -39,7 +40,7 @@ class TestClientConstruction(unittest.TestCase):
 
     def test_context_manager(self):
         # Construction itself does not contact the server.
-        with TritonClient("localhost:48000", protocol="http") as client:
+        with TritonClient("localhost:54245", protocol="http") as client:
             self.assertFalse(client._closed)
         self.assertTrue(client._closed)
 
@@ -47,27 +48,28 @@ class TestClientConstruction(unittest.TestCase):
 class TestIntegration(unittest.TestCase):
     """Requires a running Triton server."""
 
-    GRPC_URL = "localhost:48001"
-    HTTP_URL = "localhost:48000"
-    MODEL = "yolov5_ensemble"
+    GRPC_URL = "localhost:54246"
+    HTTP_URL = "localhost:54245"
+    MODEL = "YOLO26_DET_PRE_YUV_ENSEMBLE"
     IMAGE = "images/bus.jpg"
 
     def _load_image(self):
-        from PIL import Image
+        import cv2
 
         image_path = Path(self.IMAGE)
         if not image_path.exists():
             image_path = Path("workspace") / self.IMAGE
-        img = Image.open(image_path).convert("RGB")
-        return np.array(img)[np.newaxis, ...]
+        image = cv2.imread(str(image_path))
+        if image is None:
+            raise ValueError(f"Cannot read image: {image_path}")
+        return bgr_to_nv12(image)[..., None] if self.MODEL.endswith("_YUV_ENSEMBLE") else image
 
     def _output_specs(self):
         return {
-            "num_dets": ([1, 1], "int32"),
-            "detection_boxes": ([1, 300, 4], "float32"),
-            "detection_scores": ([1, 300], "float32"),
-            "detection_classes": ([1, 300], "int32"),
-            "transform_metadata": ([1, 6], "float32"),
+            "NUM_DETS": ([1], "int32"),
+            "DETECTION_BOXES": ([300, 4], "float32"),
+            "DETECTION_SCORES": ([300], "float32"),
+            "DETECTION_CLASSES": ([300], "int32"),
         }
 
     def _infer(self, protocol):
@@ -84,25 +86,25 @@ class TestIntegration(unittest.TestCase):
                 kwargs["output_specs"] = self._output_specs()
             return client.infer(
                 model_name=self.MODEL,
-                inputs={"raw_image": img_np},
+                inputs={"YUV" if self.MODEL.endswith("_YUV_ENSEMBLE") else "IMAGE": img_np},
                 outputs=outputs,
                 **kwargs,
             )
 
     def test_grpc(self):
         result = self._infer("grpc")
-        self.assertIn("num_dets", result)
-        self.assertGreater(result["num_dets"].flat[0], 0)
+        self.assertIn("NUM_DETS", result)
+        self.assertGreater(result["NUM_DETS"].flat[0], 0)
 
     def test_http(self):
         result = self._infer("http")
-        self.assertIn("num_dets", result)
-        self.assertGreater(result["num_dets"].flat[0], 0)
+        self.assertIn("NUM_DETS", result)
+        self.assertGreater(result["NUM_DETS"].flat[0], 0)
 
     def test_shm(self):
         result = self._infer("shm")
-        self.assertIn("num_dets", result)
-        self.assertGreater(result["num_dets"].flat[0], 0)
+        self.assertIn("NUM_DETS", result)
+        self.assertGreater(result["NUM_DETS"].flat[0], 0)
 
     def test_shm_reuse(self):
         """Shared memory regions should be reused across requests."""
@@ -114,17 +116,17 @@ class TestIntegration(unittest.TestCase):
             for _ in range(3):
                 result = client.infer(
                     model_name=self.MODEL,
-                    inputs={"raw_image": img_np},
+                    inputs={"YUV" if self.MODEL.endswith("_YUV_ENSEMBLE") else "IMAGE": img_np},
                     outputs=outputs,
                     output_specs=self._output_specs(),
                 )
-            self.assertGreater(result["num_dets"].flat[0], 0)
+            self.assertGreater(result["NUM_DETS"].flat[0], 0)
 
     def test_metadata(self):
         with TritonClient(self.HTTP_URL, protocol="http") as client:
             meta = client.get_model_metadata(self.MODEL)
             self.assertEqual(meta["name"], self.MODEL)
-            self.assertTrue(any(t["name"] == "num_dets" for t in meta["outputs"]))
+            self.assertTrue(any(t["name"] == "NUM_DETS" for t in meta["outputs"]))
 
 
 def main():

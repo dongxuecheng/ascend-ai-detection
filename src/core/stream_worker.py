@@ -9,7 +9,8 @@ from config.config import config
 from utils.logger import setup_logger
 from utils.obj import Box
 from stream.remote_capture import RTSPClient, STATUS_CONNECTED, STATUS_DISCONNECTED, STATUS_NOT_FOUND
-from stream.remote_capture import DECODER_CPU_FFMPEG, DECODER_GPU_NVCUVID
+from stream.remote_capture import DECODER_CPU_FFMPEG, PIXEL_BGR, PIXEL_NV12
+from stream.frame import FrameImages
 from task.upload import EventUploader
 from task.getFence import TaskFence
 from detect.sam3 import call_sam3
@@ -48,21 +49,25 @@ def _get_yolo_client(model_name: str) -> Optional[YOLOTritonFast]:
     if model_name not in _yolo_local.clients:
         try:
             model_cfg = config.YOLO_MODEL_CONFIGS.get(model_name, {})
+            protocol = model_cfg.get("protocol", config.TRITON_PROTOCOL)
+            endpoint = config.triton_endpoint(protocol)
             client = YOLOTritonFast(
-                url=config.TRITON_YOLO_URL,
+                url=endpoint,
                 model_name=model_name,
                 label_map=model_cfg.get("label_map"),
-                input_name=model_cfg.get("input_name", "raw_image"),
+                input_name=model_cfg.get("input_name", "IMAGE"),
                 output_name=model_cfg.get("output_name", "output0"),
                 input_size=model_cfg.get("input_size", 640),
                 output_format=model_cfg.get("output_format", "yolo_v8_v11"),
                 conf_thresh=model_cfg.get("conf_thresh", 0.3),
                 iou_thresh=model_cfg.get("iou_thresh", 0.45),
-                protocol="shm",
+                protocol=protocol,
+                backend=model_cfg.get("backend", "ascend"),
+                max_detections=model_cfg.get("max_detections", 300),
                 warmup=True,
             )
             _yolo_local.clients[model_name] = client
-            logger.info(f"YOLO 客户端创建成功: {model_name} @ {config.TRITON_YOLO_URL} "
+            logger.info(f"YOLO 客户端创建成功: {model_name} @ {endpoint} "
                         f"(classes={client.num_classes})")
         except Exception as e:
             logger.error(f"YOLO 客户端创建失败 {model_name}: {e}")
@@ -105,6 +110,7 @@ class StreamWorker(threading.Thread):
             "use_shared_mem": True,
             "only_key_frames": not need_full_frame,
             "decoder_type": DECODER_CPU_FFMPEG,
+            "pixel_format": PIXEL_NV12,
             # "decoder_type": DECODER_GPU_NVCUVID,
             # "gpu_id": self.gpu_code,
         }
@@ -116,7 +122,7 @@ class StreamWorker(threading.Thread):
         self._recovery_attempts = 0              # 本轮连续恢复失败次数
         self._max_recovery_attempts = 5          # 超过此次数后退出 worker，由 orchestrator 重建
         self._recovery_cooldown_sec = getattr(config, "STREAM_RECOVERY_COOLDOWN_SEC", 10.0)
-        self._shm_gone_immediate_recover = True  # 共享内存消失时立即恢复
+        self._last_corrupted_log_at = 0.0
 
         # 每个任务的上次分析时间戳（用于 sleepJudgeTime 控制频率）
         self.task_last_run: Dict[str, float] = {}
@@ -199,7 +205,8 @@ class StreamWorker(threading.Thread):
             return False
         if not self._stream_start_params.get("use_shared_mem"):
             return True
-        shm_path = f"/dev/shm/{self._stream_id}"
+        active_id = self.capture.get_active_stream_id(self._stream_id) if self.capture else self._stream_id
+        shm_path = f"/dev/shm/{active_id}"
         return os.path.exists(shm_path)
 
     def _query_stream_status(self) -> Optional[int]:
@@ -259,7 +266,7 @@ class StreamWorker(threading.Thread):
             logger.error(f"[恢复] 重建视频流异常: {self.rtsp_url}, {e}", exc_info=True)
             return False
 
-    def _pre_detect_with_yolo(self, frame, tasks: List) -> Tuple[List, List[Box], set]:
+    def _pre_detect_with_yolo(self, frame: FrameImages, tasks: List) -> Tuple[List, List[Box], set]:
         """
         使用 YOLO 模型对任务进行预检测。
 
@@ -327,7 +334,10 @@ class StreamWorker(threading.Thread):
                 class_ids = None  # 有未知类别时，不过滤，全量检测
 
             try:
-                boxes = client.predict(frame, classes=class_ids)
+                if client.input_name == "YUV":
+                    boxes = client.predict_nv12(frame.nv12(), classes=class_ids)
+                else:
+                    boxes = client.predict(frame.bgr(), classes=class_ids)
                 yolo_results[model_name] = boxes
                 all_yolo_boxes.extend(boxes)
                 label_counts = {}
@@ -400,7 +410,7 @@ class StreamWorker(threading.Thread):
         # 2. 主循环
         while not self.stopped:
             try:
-                frame_ts, frame = self.capture.read(
+                frame_ts, frame, corrupted = self.capture.read_ex(
                     self._stream_id, blocking=True, timeout_ms=5000
                 )
                 if frame is None:
@@ -417,7 +427,7 @@ class StreamWorker(threading.Thread):
 
                     # 优先根据服务端状态决定是否需要重建
                     server_status = self._query_stream_status()
-                    if shm_gone:
+                    if shm_gone and no_frame_duration >= self._recovery_cooldown_sec:
                         logger.error(
                             f"[拉流] 共享内存已消失: /dev/shm/{self._stream_id}, "
                             f"rtsp={self.rtsp_url}"
@@ -472,12 +482,28 @@ class StreamWorker(threading.Thread):
                             f"[拉流] 满足恢复条件但处于冷却中，跳过: "
                             f"rtsp={self.rtsp_url}, 无帧时长={no_frame_duration:.1f}s"
                         )
+                    # SHM 重建窗口内 read_ex 可能立即返回，避免忙轮询。
+                    time.sleep(0.1)
                     continue
 
                 # 读帧成功，重置故障计数
                 self._consecutive_read_failures = 0
                 self._recovery_attempts = 0
                 self._last_frame_at = time.time()
+
+                # 花屏表示传输仍有进展，但不能作为检测或时间累计的输入。
+                if corrupted:
+                    if self._last_frame_at - self._last_corrupted_log_at >= 10.0:
+                        logger.warning(f"[拉流] 跳过服务端标记的花屏帧: stream_id={self._stream_id}")
+                        self._last_corrupted_log_at = self._last_frame_at
+                    continue
+                # 服务端可能复用同 URL 的其他格式；仅在消费分支需要时转换。
+                meta = self.capture.get_last_frame_meta(self._stream_id) or {}
+                pixel_format = meta.get("pix_fmt", PIXEL_BGR)
+                images = FrameImages(frame, pixel_format, meta)
+                if pixel_format != PIXEL_NV12 and getattr(self, "_last_pixel_format", None) != pixel_format:
+                    logger.warning(f"[拉流] 实际帧格式={pixel_format}，非 NV12 直通，将按需转换: stream_id={self._stream_id}")
+                self._last_pixel_format = pixel_format
 
                 # 应用层日志：读取到图片，打印设备/任务信息（不改动 RTSPClient 封装）
                 try:
@@ -509,6 +535,7 @@ class StreamWorker(threading.Thread):
                             f"[拉流] 读取到图片 | rtsp={self.rtsp_url}, {device_info}, "
                             f"stream_id={self._stream_id}, frame_ts={frame_ts}, "
                             f"frame_shape={frame.shape if frame is not None else None}, "
+                            f"pixel_format={pixel_format}, image_size={images.width}x{images.height}, "
                             f"tasks={task_info}"
                         )
                 except Exception:
@@ -548,7 +575,7 @@ class StreamWorker(threading.Thread):
 
                 # 3. YOLO 预检测：未检测到目标则跳过 SAM3
                 t_yolo_start = time.time()
-                ready_tasks, yolo_boxes, skip_sam3_task_ids = self._pre_detect_with_yolo(frame, ready_tasks)
+                ready_tasks, yolo_boxes, skip_sam3_task_ids = self._pre_detect_with_yolo(images, ready_tasks)
                 logger.debug(f"预检测完成 | 通过预检测的任务数={len(ready_tasks)}, YOLO 检测到的框数={len(yolo_boxes)}, 跳过 SAM3 的任务数={len(skip_sam3_task_ids)}")
                 t_yolo_end = time.time()
                 if not ready_tasks:
@@ -579,7 +606,7 @@ class StreamWorker(threading.Thread):
                     t_sam3_start = time.time()
                     logger.info(f"SAM3 请求 | URL={url} | Prompts: {merged_prompts}, return_mask={return_mask}")
                     boxes = call_sam3(
-                        frame, merged_prompts,
+                        images.bgr(), merged_prompts,
                         confidence_threshold=0.3,
                         return_mask=return_mask,
                         url=url,
@@ -641,9 +668,12 @@ class StreamWorker(threading.Thread):
                             else:
                                 logger.info(f"开始分析 task={task.id}, algo={task.algorithmCode}, input_boxes={len(task_boxes)}")
                             fences = self._get_fences_for_task(task)
-                            image_width = frame.shape[1]
-                            image_height = frame.shape[0]
-                            violations = analyze_for_task(task_boxes, task, fences=fences, image_width=image_width, image_height=image_height, frame=frame)
+                            image_width = images.width
+                            image_height = images.height
+                            violations = analyze_for_task(
+                                task_boxes, task, fences=fences, image_width=image_width,
+                                image_height=image_height, frame_provider=images.bgr,
+                            )
                             if len(task_boxes) > 0 and len(violations) > 0:
                                 logger.info(f"分析完成 task={task.id}, 规则引擎违规数={len(violations)}")
                             if len(violations) == 0:
@@ -653,20 +683,22 @@ class StreamWorker(threading.Thread):
                                 
 
                             # 分类器二次确认（如吸烟检测后调用 resnet_smoke 分类模型）
-                            violations = classify_for_task(
-                                frame, task, violations,
-                                image_width=image_width, image_height=image_height
-                            )
+                            if config.ALGORITHM_CLASSIFIERS.get(algo_code):
+                                violations = classify_for_task(
+                                    images.bgr(), task, violations,
+                                    image_width=image_width, image_height=image_height
+                                )
                             logger.info(f"分类过滤完成 task={task.id}, 剩余违规数={len(violations)}")
                             if len(violations) == 0:
                                 self.task_last_run[task.id] = now
                                 continue
 
                             # VL 大模型二次确认：遍历每个违规目标裁剪后分别判断，否认则过滤
-                            violations = vl_analyze_for_task(
-                                frame, task, violations,
-                                image_width=image_width, image_height=image_height
-                            )
+                            if config.VL_ENABLED and config.ALGORITHM_VL_CONFIG.get(algo_code, {}).get("enabled", False):
+                                violations = vl_analyze_for_task(
+                                    images.bgr(), task, violations,
+                                    image_width=image_width, image_height=image_height
+                                )
                             logger.info(f"VL 二次确认后 task={task.id}, 最终违规数={len(violations)}")
 
                             if violations:
@@ -697,7 +729,7 @@ class StreamWorker(threading.Thread):
 
                                 # 绘制 OSD（检测框、违规高亮、告警横幅、时间戳）
                                 alert_frame = render_alert_frame(
-                                    frame=frame,
+                                    frame=images.bgr(),
                                     all_boxes=task_boxes,
                                     violations=violations,
                                     task=task,
@@ -710,7 +742,7 @@ class StreamWorker(threading.Thread):
                                     'channel': task.deviceChannel or '1',
                                     'task_id': task.id,
                                 }
-                                uploader.add_alert(alert_frame, frame, alert_context, task.algorithmCode)
+                                uploader.add_alert(alert_frame, images.bgr(), alert_context, task.algorithmCode)
                                 logger.info(f"✅ 已加入上传队列 task={task.id}")
                             else:
                                 logger.debug(f"无违规 task={task.id}")
