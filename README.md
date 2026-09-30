@@ -4,7 +4,7 @@ AIDetection 是工业安全视频检测的 Python 业务服务：从任务平台
 
 本仓库包含任务调度、推理客户端、检测规则、跟踪器、截图绘制和上传代码，不包含摄像头管理界面、模型权重、SAM3 服务、Triton 模型仓库或 C++ RTSP 服务端。运行完整系统需要先部署这些外部依赖。
 
-> 当前代码已串联任务同步、拉流、推理、分析和告警流程，并非仅打印任务的入口桩代码。但当前仓库存在一个明确的启动阻塞：`src/task/upload.py` 导入了缺失的 `utils.frame_artifact_detector` 模块。完整服务启动前需补齐该模块，或在代码维护中移除已经停用的花屏检测逻辑所遗留的导入。下面的部署步骤以解决此阻塞、依赖服务就绪为前提。更多实际限制见[已知限制与排障](#已知限制与排障)。
+> 当前代码已串联任务同步、拉流、推理、分析和告警流程，并非仅打印任务的入口桩代码。完整服务启动前需确保依赖服务就绪。更多实际限制见[已知限制与排障](#已知限制与排障)。
 
 ## 目录
 
@@ -161,7 +161,7 @@ RTSP 客户端另有 JPEG-over-gRPC 模式，可用于跨机器单独联调，�
 
 ## Docker 部署
 
-以下命令在 Linux 的项目根目录执行，需要支持 `include` 的 Docker Compose。先解决文首列出的缺失模块问题。
+以下命令在 Linux 的项目根目录执行，需要支持 `include` 的 Docker Compose。
 
 ### 1. 准备配置与目录
 
@@ -169,8 +169,8 @@ RTSP 客户端另有 JPEG-over-gRPC 模式，可用于跨机器单独联调，�
 # 首次部署时复制；已有 .env 时保留现有配置
 cp -n .env.example .env
 
-# 以下使用模板中的 SHM_NAMESPACE=aidetection；修改命名空间后同步调整目录
-sudo mkdir -p /dev/shm/aidetection /mnt/yolo/images /mnt/yolo/artifacts
+# 以下使用模板中的 SHM_NAMESPACE=grpc_rtsp；修改命名空间后同步调整目录
+sudo mkdir -p /dev/shm/grpc_rtsp /mnt/yolo/images
 mkdir -p logs
 ```
 
@@ -185,7 +185,7 @@ mkdir -p logs
 ```dotenv
 GRPC_RTSP_COMPOSE=../grpc_rtsp/docker-compose.yml
 TRITON_COMPOSE=../triton/docker-compose.yml
-SHM_NAMESPACE=aidetection
+SHM_NAMESPACE=grpc_rtsp
 ```
 
 默认值是 `./docker-compose.empty.yml`；指定了不存在的外部文件时仍会报错，并不会再次自动回退。应用没有 `depends_on`，启动顺序和依赖就绪状态需要自行确认。
@@ -194,10 +194,10 @@ RTSP 服务端应与应用挂载同一个宿主机目录：
 
 ```yaml
 volumes:
-  - /dev/shm/${SHM_NAMESPACE:-aidetection}:/dev/shm
+  - /dev/shm/${SHM_NAMESPACE:-grpc_rtsp}:/dev/shm
 ```
 
-同时确保双方有读写权限。若 Triton 使用 SHM，也要协调其 `/dev/shm` 挂载。`SHM_NAMESPACE` 由 Compose 用来生成挂载路径，Python 内部仍读取 `/dev/shm/{stream_id}`。
+当前默认挂载为宿主机 `/dev/shm/grpc_rtsp` 到 AIDetection 容器 `/dev/shm`，与已部署的 RTSP 服务共用帧文件。同时确保双方有读写权限。若 Triton 使用 SHM，也要协调其 `/dev/shm` 挂载。`SHM_NAMESPACE` 由 Compose 用来生成挂载路径，Python 内部仍读取 `/dev/shm/{stream_id}`。
 
 ### 3. 检查、构建与启动
 
@@ -233,7 +233,7 @@ docker compose logs --tail=100 -f aidetection
 
 代码和 YAML 在启动时加载，不支持文件级热加载。远程任务新增/删除和 RTSP 地址更新有单独的同步机制。
 
-当前 Compose 绑定了 `/mnt/yolo/images`、`/mnt/yolo/artifacts`、`/etc/localtime`、`/etc/timezone`，部署主机需有相应路径；部分 Linux 发行版没有 `/etc/timezone`，需调整该挂载。同机多实例除设置不同 `SHM_NAMESPACE` 外，还需调整固定的 `container_name: aidetection`，并规划输出目录。
+当前 Compose 绑定了 `/mnt/yolo/images`、`/etc/localtime`、`/etc/timezone`，部署主机需有相应路径；部分 Linux 发行版没有 `/etc/timezone`，需调整该挂载。同机多实例除设置不同 `SHM_NAMESPACE` 外，还需调整固定的 `container_name: aidetection`，并规划输出目录。
 
 ## 本地 Python 运行
 
@@ -265,7 +265,7 @@ cp -n .env.example .env
 # 只导入配置，不连接任务平台或推理服务
 PYTHONPATH=src python -c "from config.config import config; print('enabled algorithms:', ', '.join(config.ALGORITHM_CODES))"
 
-# 依赖、共享内存和缺失模块均准备完成后启动
+# 依赖和共享内存均准备完成后启动
 python main.py
 ```
 
@@ -469,7 +469,7 @@ curl -f http://192.168.100.74:54245/v2/models/YOLO26_DET_PRE_YUV_ENSEMBLE/ready
 python tests/local/test_triton.py -i assets/images/test.jpg --protocol grpc --url 192.168.100.74:54246
 ```
 
-本项目 `shm` 是 **HTTP + POSIX 系统共享内存**，与上游示例的 gRPC 管理通道不同，必须使用 HTTP 地址。上游 Compose 的 `ipc: host` 并不自动解决本项目 `/dev/shm/aidetection:/dev/shm` 的目录隔离：只有两端实际看到同一 SHM 对象才能注册成功。默认 gRPC 无需修改任何 RTSP SHM 挂载，也无需为 AIDetection 容器开放 NPU 设备权限。
+本项目 `shm` 是 **HTTP + POSIX 系统共享内存**，与上游示例的 gRPC 管理通道不同，必须使用 HTTP 地址。上游 Compose 的 `ipc: host` 并不自动解决本项目 `/dev/shm/grpc_rtsp:/dev/shm` 的目录隔离：只有两端实际看到同一 SHM 对象才能注册成功。默认 gRPC 无需修改任何 RTSP SHM 挂载，也无需为 AIDetection 容器开放 NPU 设备权限。
 
 暂停的是旧异物 YOLOv5 路径和吸烟分类复核，不会自动删除原有 SAM3 吸烟/异物规则或改变算法允许列表。后续提供专用昇腾模型时，需核对标签与输入输出后再单独接入。
 
@@ -666,18 +666,18 @@ python src/triton_client/test_client.py --help
 ```dotenv
 GRPC_RTSP_COMPOSE=../rtspGrpcServer/docker-compose.cpu.yml
 STREAM_SERVER_ADDRESS=grpc_rtsp_cpu:50051
-SHM_NAMESPACE=aidetection
+SHM_NAMESPACE=grpc_rtsp
 ```
 
 先按上游 CPU 部署说明准备与 aarch64 匹配的二进制及运行文件，再在 Linux 上验证：
 
 ```bash
-mkdir -p /dev/shm/aidetection
+mkdir -p /dev/shm/grpc_rtsp
 docker compose config
 docker compose up -d
 ```
 
-检查渲染后的两个服务是否都将宿主机 `/dev/shm/aidetection` 挂到容器 `/dev/shm`。上游 CPU Compose 的命名空间默认值是 `grpc_rtsp`，本项目是 `aidetection`，不能分别沿用不同默认值。独立启动的两个 Compose 项目不一定共享网络，此时使用可达的主机地址和实际映射端口，或显式配置共同网络；仅改服务名不保证连通。跨主机只支持 JPEG-over-gRPC，生产 worker 的 SHM 模式仍要求同机共享文件。
+检查渲染后的两个服务是否都将宿主机 `/dev/shm/grpc_rtsp` 挂到容器 `/dev/shm`。本项目与上游 CPU Compose 的命名空间默认值均为 `grpc_rtsp`；若修改命名空间，必须同步两端的实际挂载目录。独立启动的两个 Compose 项目不一定共享网络，此时使用可达的主机地址和实际映射端口，或显式配置共同网络；仅改服务名不保证连通。跨主机只支持 JPEG-over-gRPC，生产 worker 的 SHM 模式仍要求同机共享文件。
 
 **客户端接口示例**（从项目根目录运行，`PYTHONPATH=src`）：
 
@@ -821,7 +821,6 @@ python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. src/stream/st
 
 | 现象 | 原因与处理方向 |
 | --- | --- |
-| 启动报 `No module named 'utils.frame_artifact_detector'` | `src/task/upload.py` 顶层导入了仓库缺失模块；虽然花屏检测调用已注释，导入仍执行。需补齐模块或移除废弃导入 |
 | gRPC 导入时版本异常 | 当前生成代码要求 `grpcio >= 1.81.1`、匹配 Protobuf 6.33.5 生成代码；核对安装结果和 Triton 依赖冲突 |
 | Docker 镜像启动后找不到 `main.py` | 运行镜像没有内置源码，需挂载项目目录到 `/app` |
 | `grpc_rtsp` 或 `triton` 无法解析 | 服务没有加入对应 Docker 网络，或外部 include 仍为空；调整服务网络或填写实际地址 |

@@ -9,7 +9,6 @@ import os
 
 from config.config import config
 from utils.logger import setup_logger
-from utils.frame_artifact_detector import SingleFrameDetector, SingleFrameConfig 
 
 logger = setup_logger("upload")
 
@@ -104,24 +103,6 @@ class EventUploader:
         """
         执行具体的 HTTP POST 请求，同时保存原图到本地
         """
-        '''
-        cfg = SingleFrameConfig(
-            decision_mode="vote",
-            vote_threshold=2,        # 至少 2 个条件触发才判花屏
-            block_ratio_threshold=0.9,
-        )
-        det = SingleFrameDetector(cfg)
-        r = det.detect(original_frame)
-        if r.is_artifact:
-            nvr_ip = context.get('nvr_ip', '0.0.0.0')
-            channel = context.get('channel', '1')
-            logger.warning(f"排除花屏图片, IP:{nvr_ip} CH:{channel}, CODE : {algorithm_code}, {r.reasons}")
-            now = datetime.now()
-            time_str = now.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            filename = f"/mnt/yolo/artifacts/{algorithm_code}_{time_str}.jpg"
-            cv2.imwrite(filename, original_frame)
-            return
-        '''
         try:
             # 0. 先保存原图（即使上传失败也保留现场）
             task_id = context.get('task_id', 'unknown')
