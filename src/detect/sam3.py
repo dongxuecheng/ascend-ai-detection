@@ -1,6 +1,7 @@
 import base64
 import time
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -13,6 +14,18 @@ from utils.rle import binary_mask_to_rle
 
 logger = setup_logger("sam3")
 
+# 恢复原有裁剪参数；max_crops 等预算继续由服务端默认值约束。
+DEFAULT_CROP_CONFIG = {
+    "max_size": 640,
+    "padding": 20,
+    "w_diou": 30,
+    "w_expansion": 5,
+    "count_penalty": 120,
+    "nms_threshold": 0.2,
+    "enable_ar_fix": True,
+    "target_ar": 1,
+}
+
 
 def call_sam3(
     frame: np.ndarray,
@@ -20,15 +33,22 @@ def call_sam3(
     confidence_threshold: float = 0.3,
     return_mask: bool = False,
     url: Optional[str] = None,
+    *,
+    pre_detect_labels: Optional[List[str]] = None,
+    merge_results: bool = True,
+    crop_config: Optional[dict] = None,
 ) -> List[Box]:
     """
-    调用 ascend-sam3 的 POST /predict，返回原图坐标的检测框列表。
+    调用 ascend-sam3，按 URL 选择普通预测或目标精细检测协议。
 
     :param frame: BGR 格式的 numpy 数组
     :param prompts: 检测目标文本提示词列表，如 ['person', 'head', 'helmet']
     :param confidence_threshold: 置信度阈值，默认 0.3
     :param return_mask: 是否返回掩码
     :param url: 自定义 SAM3 接口地址；为空时使用 config.SAM3_URL_OBJ
+    :param pre_detect_labels: 精细检测的主体预检测标签，默认 ['person']
+    :param merge_results: 精细检测是否合并原图结果，默认 True
+    :param crop_config: 精细检测裁剪参数；未传入时使用 DEFAULT_CROP_CONFIG
     :return: Box 对象列表
     """
     if not prompts:
@@ -41,15 +61,26 @@ def call_sam3(
             return []
         image_b64 = base64.b64encode(encoded).decode("utf-8")
 
-        # ascend-sam3 使用全图多文本推理，不支持旧服务的小目标裁剪参数。
-        payload = {
-            "image": image_b64,
-            "class_names": prompts,
-            "confidence": confidence_threshold,
-            "return_mask": return_mask,
-        }
-
         effective_url = url if url else config.SAM3_URL_OBJ
+        if urlsplit(effective_url).path.rstrip("/").endswith("/predict-obj-refine"):
+            # 合并后的 prompts 来自 set，不能用第一个标签决定裁剪主体。
+            payload = {
+                "image_base64": image_b64,
+                "confidence_threshold": confidence_threshold,
+                "pre_detect_labels": pre_detect_labels if pre_detect_labels is not None else ["person"],
+                "prompts": [{"text": p, "boxes": []} for p in prompts],
+                "return_mask": return_mask,
+                "merge_results": merge_results,
+                "crop_config": dict(crop_config if crop_config is not None else DEFAULT_CROP_CONFIG),
+            }
+        else:
+            payload = {
+                "image": image_b64,
+                "class_names": prompts,
+                "confidence": confidence_threshold,
+                "return_mask": return_mask,
+            }
+
         t_http_start = time.time()
         resp = requests.post(effective_url, json=payload, timeout=config.SAM3_TIMEOUT_SECONDS)
         t_http_end = time.time()

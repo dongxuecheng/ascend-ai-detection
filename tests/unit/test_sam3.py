@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 os.environ.setdefault("AIDETECTION_LOG_DISABLE_FILE", "1")
 
-from detect.sam3 import call_sam3, parse_sam3_response
+from detect.sam3 import DEFAULT_CROP_CONFIG, call_sam3, parse_sam3_response
 from utils.rle import binary_mask_to_rle
 
 
@@ -63,6 +63,79 @@ class Sam3RequestTests(unittest.TestCase):
         self.assertEqual(self.post.call_args.args[0], "http://gateway:18000/predict")
         self.assertEqual(self.post.call_args.kwargs["timeout"], 90)
         self.assertIs(self.post.call_args.kwargs["json"]["return_mask"], False)
+
+    def test_refine_json_contract_and_jpeg(self):
+        self.post.return_value.json.return_value = {
+            **ascend_result([1, 2, 4, 2, 8, 1]), "refinement": {"crops_processed": 2},
+        }
+        boxes = call_sam3(
+            self.frame, ["head", "helmet", "person"], confidence_threshold=0.65,
+            return_mask=True, url="http://sam3.example:18000/predict-obj-refine",
+        )
+        payload = self.post.call_args.kwargs["json"]
+        self.assertEqual(set(payload), {
+            "image_base64", "confidence_threshold", "pre_detect_labels", "prompts",
+            "return_mask", "merge_results", "crop_config",
+        })
+        self.assertEqual(payload["pre_detect_labels"], ["person"])
+        self.assertEqual(payload["prompts"], [
+            {"text": "head", "boxes": []}, {"text": "helmet", "boxes": []},
+            {"text": "person", "boxes": []},
+        ])
+        self.assertEqual(payload["confidence_threshold"], 0.65)
+        self.assertIs(payload["return_mask"], True)
+        self.assertIs(payload["merge_results"], True)
+        self.assertEqual(payload["crop_config"], DEFAULT_CROP_CONFIG)
+        self.assertIsNot(payload["crop_config"], DEFAULT_CROP_CONFIG)
+        decoded = cv2.imdecode(
+            np.frombuffer(base64.b64decode(payload["image_base64"]), np.uint8), cv2.IMREAD_COLOR,
+        )
+        self.assertEqual(decoded.shape, self.frame.shape)
+        self.assertEqual(len(boxes), 1)
+        self.assertEqual(boxes[0].source, "SAM3")
+        np.testing.assert_array_equal(boxes[0].rle_to_mask(), [[1, 1, 0, 1], [1, 0, 0, 1]])
+
+    def test_refine_custom_options(self):
+        crop = {"padding": 32, "max_size": 512, "max_crops": 2}
+        call_sam3(
+            self.frame, ["head", "helmet"], url="http://sam3/predict-obj-refine",
+            pre_detect_labels=["person", "driver"], merge_results=False, crop_config=crop,
+        )
+        payload = self.post.call_args.kwargs["json"]
+        self.assertEqual(payload["pre_detect_labels"], ["person", "driver"])
+        self.assertIs(payload["merge_results"], False)
+        self.assertEqual(payload["crop_config"], crop)
+        self.assertEqual(DEFAULT_CROP_CONFIG["padding"], 20)
+
+    def test_refine_empty_options_are_preserved(self):
+        call_sam3(
+            self.frame, ["helmet"], url="http://sam3/predict-obj-refine",
+            pre_detect_labels=[], crop_config={},
+        )
+        payload = self.post.call_args.kwargs["json"]
+        self.assertEqual(payload["pre_detect_labels"], [])
+        self.assertEqual(payload["crop_config"], {})
+
+    def test_refine_endpoint_with_prefix_trailing_slash_and_query(self):
+        call_sam3(self.frame, ["helmet"], url="http://gateway/sam3/predict-obj-refine/?v=1")
+        self.assertIn("image_base64", self.post.call_args.kwargs["json"])
+
+    def test_refine_default_endpoint_uses_configured_timeout(self):
+        with patch("detect.sam3.config") as config:
+            config.SAM3_URL_OBJ = "http://gateway:18000/predict-obj-refine"
+            config.SAM3_TIMEOUT_SECONDS = 90
+            call_sam3(self.frame, ["helmet", "head", "person"])
+        self.assertEqual(self.post.call_args.kwargs["timeout"], 90)
+        self.assertEqual(self.post.call_args.kwargs["json"]["pre_detect_labels"], ["person"])
+
+    def test_regular_endpoint_does_not_send_refine_options(self):
+        call_sam3(
+            self.frame, ["person"], url="http://sam3/predict?next=/predict-obj-refine",
+            pre_detect_labels=["driver"], merge_results=False, crop_config={"padding": 32},
+        )
+        self.assertEqual(set(self.post.call_args.kwargs["json"]), {
+            "image", "class_names", "confidence", "return_mask",
+        })
 
     def test_empty_prompts_do_not_send_request(self):
         self.assertEqual(call_sam3(self.frame, []), [])

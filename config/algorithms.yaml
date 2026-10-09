@@ -60,7 +60,7 @@ code_descriptions:
   descriptions: 车辆距离卸煤沟两米内
 sam3_prompts:
 - code: '0'
-  prompts: [head, helmet, hard hat, hat, person, umbrella, driver]
+  prompts: [person, head, helmet, hard hat, hat, umbrella, driver]
   return_mask: false
 - code: '8'
   prompts: [person, person leg]
@@ -69,7 +69,7 @@ sam3_prompts:
   prompts: [person, uniform, orange upper garment, upper garment, pants, vest, high-visibility stripe, high-vis stripe, reflective stripe, linear reflective stripe, light-grey reflective line on clothing, reflective piping, reflective trim, red hat, red helmet, red hard hat]
   return_mask: true
 - code: '14'
-  prompts: [cigarette, person, face]
+  prompts: [person, cigarette, face]
   return_mask: false
 - code: '16'
   prompts: [fire, flame]
@@ -129,10 +129,10 @@ sam3_prompts:
   prompts: [truck, dark coal residue, coal residue]
   return_mask: true
 - code: '60'
-  prompts: [truck, person, driver]
+  prompts: [person, truck, driver]
   return_mask: false
 - code: '61'
-  prompts: [vest, person]
+  prompts: [person, vest]
   return_mask: true
 - code: '62'
   prompts: [truck]
@@ -141,7 +141,7 @@ sam3_prompts:
   prompts: [person, hand, glove, face shield, face]
   return_mask: false
 - code: '201'
-  prompts: [head, helmet, hard hat, person, hand, glove, industrial glove, skin, arm,
+  prompts: [person, head, helmet, hard hat, hand, glove, industrial glove, skin, arm,
     person leg]
   return_mask: true
 # SAM3 接口地址分组配置。

@@ -386,7 +386,7 @@ YAML 用 `yaml.safe_load` 读取，不支持 `${SAM3_URL}` 形式的环境变量
 
 ### Ascend SAM3 接口
 
-客户端依据 [ascend-sam3 的服务源码](https://github.com/dongxuecheng/ascend-sam3/blob/246ad1dab6701e48adb02195db46ca1709581226/service/main.py) 适配（核对版本：`246ad1d`）。使用 `POST /predict` 发送 JSON；不直接调用 CANN，也不依赖服务端 worker 的设备编号。
+客户端支持普通预测 `POST /predict` 和目标精细检测 `POST /predict-obj-refine`，按配置的 URL 路径选择请求协议。普通接口保持原有契约；精细接口对照本机 ascend-sam3 提交 `5079d41` 的 `service/refinement.py` 和 `service/main.py` 适配。不直接调用 CANN，也不依赖服务端 worker 的设备编号。
 
 ```json
 {
@@ -406,7 +406,38 @@ YAML 用 `yaml.safe_load` 读取，不支持 `${SAM3_URL}` 形式的环境变量
 3. 保留当前 `sam3_url_groups` 的 `url_env` 分组即可；旧的固定 `url` 可改为变量引用。使用上游多实例网关时填写网关地址，不要填写仅监听回环的后端端口。
 4. 重启应用，先运行 `--mode sam3-only --no-vl --no-classifier` 的单图测试，再验证开启 mask 的算法。
 
-当前 `call_sam3()` 不再接收旧服务的 `pre_detect_labels`、`merge_results`、`crop_config` 参数，也不再发送 `image_base64`、`prompts`、`confidence_threshold` 字段。Python 调用方仍使用 `prompts` / `confidence_threshold` 参数，客户端映射为新请求字段。上游执行全图多文本推理，**不包含旧服务的小目标预检测与裁剪放大流程**，因此接口适配不代表小目标检测效果与旧服务完全一致，需要用现场图片复核。SAM3 请求失败时仍沿用现有行为：记录错误并返回空列表。
+`/predict-obj-refine` 使用另一套 JSON 字段，不能直接发送普通接口的请求体，否则会返回 422：
+
+```json
+{
+  "image_base64": "<JPEG 图片的 base64 字符串>",
+  "confidence_threshold": 0.3,
+  "pre_detect_labels": ["person"],
+  "prompts": [{"text": "head", "boxes": []}, {"text": "helmet", "boxes": []}],
+  "return_mask": false,
+  "merge_results": true,
+  "crop_config": {
+    "max_size": 640, "padding": 20, "w_diou": 30, "w_expansion": 5,
+    "count_penalty": 120, "nms_threshold": 0.2, "enable_ar_fix": true, "target_ar": 1
+  }
+}
+```
+
+已恢复提交 `ccfe333` 删除的 `pre_detect_labels`、`merge_results`、`crop_config` 关键字参数及默认裁剪配置，接口名使用 `/predict-obj-refine`。普通接口仍发送 `image/class_names/confidence/return_mask`，不附加精细检测字段；两个接口均保留当前的原图坐标和 mask 解析。
+
+精细检测默认以 `person` 为主体，不再像旧代码那样取第一个 prompt，避免合并提示词顺序不固定时误用 `head`、`helmet` 等作为裁剪主体。生产 worker 和本地图片测试会按现有算法分组自动使用正确协议，无需另外改调用点。显式调用示例：
+
+```python
+call_sam3(
+    frame, ["person", "head", "helmet", "hard hat"],
+    url=config.SAM3_URL_REFINE,
+    pre_detect_labels=["person"],
+    merge_results=True,
+    crop_config={"max_size": 640, "padding": 20, "max_crops": 2},
+)
+```
+
+服务端执行主体预检测、可选的原图精细检测、聚合裁剪精细检测，再恢复原图坐标并去重；`merge_results=false` 仍保留预检测结果，但不进行原图精细检测。`max_crops` 等预算未显式设置时使用服务端默认值，显式值不能超过服务端上限。同一路流的同 URL 到期任务仍合并提示词；任一任务要求 mask 时整体开启。检测效果需用现场图片复核，不能仅以目标数量增多判断准确率。SAM3 请求失败时仍沿用现有行为：记录错误并返回空列表。
 
 ### 模型配置
 
@@ -829,7 +860,7 @@ python -m grpc_tools.protoc --python_out=. --grpc_python_out=. -I. src/stream/st
 | gRPC 连接成功但持续没有帧 | 检查 RTSP 是否可用、服务端是否解码、双方 SHM 挂载和权限是否一致；远程主机的 SHM 不会通过 gRPC 自动传输 |
 | 多路高分辨率视频运行异常 | 检查宿主机 `/dev/shm` 容量。3 槽 NV12 缓冲约 `宽 × 高 × 1.5 × 3` 字节/流，1080p 约 8.9 MiB/流；BGR 约两倍。另加对齐、扩容余量及 Triton 缓冲；bind mount 场景仅改 Compose `shm_size` 无效 |
 | 改 `.env` 后仍访问旧 SAM3 地址 | 检查是否还显式设置旧 `SAM3_URL_OBJ`，以及 `sam3_url_groups` 中是否保留固定 URL |
-| SAM3 返回 404 / 422，或 mask 不生效 | 确认部署的是 ascend-sam3 的 `/predict`，请求使用 `image/class_names/confidence/return_mask`；mask 必须带正确的宽高，不可直接当作 COCO counts |
+| SAM3 返回 404 / 422，或 mask 不生效 | 核对接口与请求体：`/predict` 使用 `image/class_names/confidence`，`/predict-obj-refine` 使用 `image_base64/prompts/confidence_threshold`；核对裁剪预算上限。mask 必须带正确的宽高，不可直接当作 COCO counts |
 | 改 gRPC 地址后请求仍走 HTTP/SHM | 检查 `TRITON_PROTOCOL` 及每个模型的 `protocol` 覆盖；本项目 SHM 走 HTTP 地址而非上游示例的 gRPC 地址 |
 | SHM 注册失败 | 检查 Triton 能否看到应用创建的同一个 SHM 对象；HTTP/gRPC 无需共享此目录，可先切换验证协议 |
 | 没有 worker 或任务被跳过 | 检查平台 `data`、算法允许列表、设备 IP/通道、预览接口返回的 `msg` 和 RTSP 地址 |
