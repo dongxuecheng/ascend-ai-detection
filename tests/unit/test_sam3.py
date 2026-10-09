@@ -184,7 +184,7 @@ class Sam3ConfigTests(unittest.TestCase):
     def test_url_obj_defaults_to_main_endpoint(self):
         config = self.load_config(SAM3_URL="http://gateway:18000/predict")
         self.assertEqual(config.SAM3_URL_OBJ, config.SAM3_URL)
-        self.assertEqual(config.ALGORITHM_SAM3_URL, {})
+        self.assertEqual(config.ALGORITHM_SAM3_URL["8"], config.SAM3_URL)
 
     def test_explicit_secondary_endpoint_and_timeout(self):
         config = self.load_config(SAM3_URL="http://gateway:18000/predict",

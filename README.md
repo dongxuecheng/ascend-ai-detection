@@ -174,7 +174,7 @@ sudo mkdir -p /dev/shm/grpc_rtsp /mnt/yolo/images
 mkdir -p logs
 ```
 
-编辑 `.env`，设置任务平台、SAM3、Triton、RTSP 服务及 VL 地址。SAM3 已适配 `ascend-sam3` 的 `/predict`；默认 `sam3_url_groups: []`，统一使用 `SAM3_URL`。如果自行配置了 URL 分组，其中的具体 URL 不会被同名环境变量替换。
+编辑 `.env`，设置任务平台、SAM3、Triton、RTSP 服务及 VL 地址。SAM3 分组通过 `url_env` 引用 `SAM3_URL`（`/predict`）和 `SAM3_URL_REFINE`（`/predict-obj-refine`），修改环境变量即可切换服务地址。若自行使用 `url` 配置固定地址，则不会被环境变量替换。
 
 模板使用 `STREAM_SERVER_ADDRESS=grpc_rtsp:50051`、`TRITON_YOLO_URL=triton-ascend:8000`、`TRITON_YOLO_GRPC_URL=triton-ascend:8001`。这些服务名只有在相应 Docker 网络中可解析时才有效；独立部署时填写可达主机地址及发布端口（上游默认 HTTP 54245、gRPC 54246）。不要混淆宿主机发布端口与容器监听端口。
 
@@ -314,7 +314,8 @@ python -c "from config.config import config; print(config.ALGORITHM_CODES)"
 | `STREAM_SERVER_ADDRESS` | `192.168.100.74:50051` | RTSP gRPC 地址；模板设为 `grpc_rtsp:50051` |
 | `STREAM_RECOVERY_COOLDOWN_SEC` | `10.0` | 两次流恢复之间的最小间隔（秒） |
 | `SAM3_URL` | `http://192.168.100.75:18002/predict` | ascend-sam3 的完整 JSON 接口地址；按实际单实例/网关地址修改 |
-| `SAM3_URL_OBJ` | 自动使用 `SAM3_URL` | 兼容旧部署变量；显式设置时覆盖未分组算法的地址，也必须使用新 `/predict` 接口 |
+| `SAM3_URL_REFINE` | 使用 `SAM3_URL` 同一服务下的 `/predict-obj-refine` | 目标精细化接口，可设置独立服务地址 |
+| `SAM3_URL_OBJ` | 自动使用 `SAM3_URL` | 兼容旧部署变量；显式设置时覆盖未分组算法的默认地址 |
 | `SAM3_TIMEOUT_SECONDS` | `30` | HTTP 请求超时秒数；多文本推理或排队较长时按实测调整 |
 | `TRITON_YOLO_URL` | `localhost:54245` | YOLO 的 HTTP/SHM 地址，不带 `http://`；模板用 `triton-ascend:8000` |
 | `TRITON_YOLO_GRPC_URL` | `localhost:54246` | YOLO 的 gRPC 地址；模板用 `triton-ascend:8001` |
@@ -341,7 +342,8 @@ supported_codes: ['8']
 sam3_prompts:
   - {code: '8', prompts: [person, person leg], return_mask: false}
 
-sam3_url_groups: []  # 统一使用环境变量中的服务地址
+sam3_url_groups:
+  - {url_env: SAM3_URL, codes: ['8']}
 
 fence_algorithms:
   - {code: '8'}
@@ -366,7 +368,7 @@ alert_dedup:
 | `supported_codes` | 本地允许处理的算法码；不会主动在平台创建任务 |
 | `code_descriptions` | 业务名称；每项使用 `descriptions` 字段，也用于原图分类目录 |
 | `sam3_prompts` | 上游标签和是否返回 mask，标签需要匹配检测器中的筛选条件 |
-| `sam3_url_groups` | 固定 URL 到算法列表的映射；未分组回退 `SAM3_URL_OBJ` |
+| `sam3_url_groups` | 使用 `url_env` 引用 SAM3 地址变量，或用 `url` 指定固定地址；未分组回退 `SAM3_URL_OBJ` |
 | `fence_algorithms` | 指定哪些算法从围栏 API 同步区域 |
 | `yolo_pre_detect` | 算法使用的模型名和预检类别；当前每个算法只取第一个模型配置 |
 | `use_yolo_boxes` | 补充 SAM3 结果中缺失类别的 YOLO 框，不是逐框去重合并 |
@@ -378,7 +380,7 @@ alert_dedup:
 | `alert_dedup` | 冷却秒数与位置 IoU 阈值；未配置或关闭时不执行该步 |
 | `gpu_codes` | 编排器轮询分配的 GPU 编号；当前 CPU 解码配置没有把编号传给后端，不代表已启用 GPU 解码 |
 
-YAML 用 `yaml.safe_load` 读取，没有环境变量插值功能。不要在 `sam3_url_groups.url` 中写 `${SAM3_URL}` 并期待自动展开；默认保留空列表即可。若需分流，可添加 `{url: 'http://sam3-server:18000/predict', codes: ['8']}`；未分组算法使用 `SAM3_URL_OBJ`，该变量未设置时使用 `SAM3_URL`。
+YAML 用 `yaml.safe_load` 读取，不支持 `${SAM3_URL}` 形式的环境变量插值。SAM3 分组使用 `url_env` 引用 `SAM3_URL`、`SAM3_URL_REFINE` 或 `SAM3_URL_OBJ`；未知变量名或引用的地址为空时启动报错，也兼容原来的 `url` 固定地址写法。当前 `8、32、33、34、52、53、38、56、49、59、50` 使用 `SAM3_URL`，`0、14、58、10` 使用 `SAM3_URL_REFINE`。未分组算法使用 `SAM3_URL_OBJ`，该变量未设置时使用 `SAM3_URL`。
 
 纯 YOLO 输入通常通过不配置 SAM3 prompt 实现，同时必须配置 `yolo_pre_detect` 并使用支持 YOLO 标签的检测器。有一个例外：算法没有 prompt 条目、且任务 `electricFence` 非空时，代码会回退到 `person` prompt。需要明确禁用这类回退时，可给该算法配置 `prompts: []`。算法 `57` 即使上游不走 SAM3，其检测器内部仍会调用 SAM3。
 
@@ -400,8 +402,8 @@ YAML 用 `yaml.safe_load` 读取，没有环境变量插值功能。不要在 `s
 升级现有部署时：
 
 1. 将 `.env` 中的 `SAM3_URL` 设置为新服务的完整 `/predict` 地址。上游默认对外端口为 `18000`，本项目保留原环境的 `18002` 默认值，不能据此推断新服务实际端口；也不要修改无关的 `VL_API_URL`。
-2. 删除或注释旧的 `SAM3_URL_OBJ`，使它自动跟随 `SAM3_URL`；需要单独设置时也只能指向新 `/predict`。`predict-person-about-small-object` 不再可用。
-3. 将旧的固定 `sam3_url_groups` 清空，或全部改为新服务地址。使用上游多实例网关时填写网关地址，不要填写仅监听回环的后端端口。
+2. 设置 `SAM3_URL_REFINE` 为服务的完整 `/predict-obj-refine` 地址。删除或注释旧的 `SAM3_URL_OBJ`，使未分组算法自动跟随 `SAM3_URL`。`predict-person-about-small-object` 不再可用。
+3. 保留当前 `sam3_url_groups` 的 `url_env` 分组即可；旧的固定 `url` 可改为变量引用。使用上游多实例网关时填写网关地址，不要填写仅监听回环的后端端口。
 4. 重启应用，先运行 `--mode sam3-only --no-vl --no-classifier` 的单图测试，再验证开启 mask 的算法。
 
 当前 `call_sam3()` 不再接收旧服务的 `pre_detect_labels`、`merge_results`、`crop_config` 参数，也不再发送 `image_base64`、`prompts`、`confidence_threshold` 字段。Python 调用方仍使用 `prompts` / `confidence_threshold` 参数，客户端映射为新请求字段。上游执行全图多文本推理，**不包含旧服务的小目标预检测与裁剪放大流程**，因此接口适配不代表小目标检测效果与旧服务完全一致，需要用现场图片复核。SAM3 请求失败时仍沿用现有行为：记录错误并返回空列表。

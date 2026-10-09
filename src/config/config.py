@@ -2,6 +2,7 @@ import os
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Dict, List, Literal
+from urllib.parse import urljoin
 
 import yaml
 # 自动加载项目根目录或当前目录下的 .env 文件
@@ -46,6 +47,32 @@ def _load_algorithms_yaml() -> dict:
     merged = dict(main_data)
     merged.update(models_data)
     return merged
+
+
+def _resolve_sam3_url_groups(groups: List[dict], urls: Dict[str, str]) -> Dict[str, str]:
+    """将 SAM3 分组中的配置变量名或固定地址解析为算法路由。"""
+    routes = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        codes = group.get("codes", [])
+        if not isinstance(codes, list):
+            continue
+        url_env = group.get("url_env")
+        if url_env:
+            if url_env not in urls:
+                raise ValueError(f"sam3_url_groups.url_env 引用了未知的 SAM3 配置变量: {url_env}")
+            url = urls[url_env]
+            if not url or not url.strip():
+                raise ValueError(f"SAM3 配置变量 {url_env} 的地址不能为空")
+        else:
+            url = str(group.get("url", ""))
+        if not url:
+            continue
+        for code in codes:
+            if code is not None:
+                routes[str(code)] = url
+    return routes
 
 
 def _load_label_map_from_file(label_map_file: str) -> Dict[str, str]:
@@ -103,8 +130,10 @@ class BaseConfig(BaseModel):
     # ---- SAM3 推理服务 ----
     # 支持通过环境变量覆盖，便于 Docker / K8s 部署时注入
     SAM3_URL: str = os.getenv("SAM3_URL", "http://192.168.100.75:18002/predict")
-    # 兼容已有部署变量；Ascend 服务只有 /predict，不再区分小目标接口。
+    # 兼容已有部署变量；未分组算法和未显式传 URL 的调用使用此地址。
     SAM3_URL_OBJ: str = os.getenv("SAM3_URL_OBJ") or SAM3_URL
+    # 目标精细化接口；未配置时使用 SAM3_URL 同一服务下的对应路径。
+    SAM3_URL_REFINE: str = os.getenv("SAM3_URL_REFINE") or urljoin(SAM3_URL, "predict-obj-refine")
     SAM3_TIMEOUT_SECONDS: float = float(os.getenv("SAM3_TIMEOUT_SECONDS", "30"))
 
     # ---- 任务/告警平台 ----
@@ -185,17 +214,10 @@ class BaseConfig(BaseModel):
     # 解析 sam3_url_groups（按 URL 分组，codes 为算法码列表）。
     # 未在分组中配置的算法码，由调用方回退到 config.SAM3_URL_OBJ。
     _sam3_url_groups_raw: List[dict] = _ALGO_CONFIG.get("sam3_url_groups", [])
-    ALGORITHM_SAM3_URL: Dict[str, str] = {}
-    for _group in _sam3_url_groups_raw:
-        if not isinstance(_group, dict):
-            continue
-        _group_url = str(_group.get("url", ""))
-        _group_codes = _group.get("codes", [])
-        if not _group_url or not isinstance(_group_codes, list):
-            continue
-        for _code in _group_codes:
-            if _code is not None:
-                ALGORITHM_SAM3_URL[str(_code)] = _group_url
+    ALGORITHM_SAM3_URL: Dict[str, str] = _resolve_sam3_url_groups(
+        _sam3_url_groups_raw,
+        {"SAM3_URL": SAM3_URL, "SAM3_URL_OBJ": SAM3_URL_OBJ, "SAM3_URL_REFINE": SAM3_URL_REFINE},
+    )
 
     # 解析 fence_algorithms（统一格式：列表，每项含 code）
     _fence_raw: List[dict] = _ALGO_CONFIG.get("fence_algorithms", [])
