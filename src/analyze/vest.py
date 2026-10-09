@@ -43,7 +43,7 @@ class VestDetector:
     # 反光衣/背心标签集合（SAM3 检测）
     VEST_LABELS = {"vest", "orange upper garment", "uniform"}
     # 反光条标签集合（SAM3 检测；与上衣有交集时认为该上衣为反光工服，豁免）
-    STRIP_LABELS = {"high‑visibility stripe", "high‑vis stripe", "reflective stripe", "linear reflective stripe", "light-grey reflective line on clothing", "reflective piping", "reflective trim"}
+    STRIP_LABELS = {"high-visibility stripe", "high-vis stripe", "reflective stripe", "linear reflective stripe", "light-grey reflective line on clothing", "reflective piping", "reflective trim"}
     # 红色安全帽标签集合（佩戴红色安全帽时豁免报警，一件红帽只豁免一个人）
     RED_HAT_LABELS = {"red hat", "red helmet", "red hard hat"}
 
@@ -246,20 +246,23 @@ class VestDetector:
         :param frame: 当前帧图像（BGR），用于保存 mask 叠加调试图（可选；analyze_for_task 会自动传入）
         :return: 违规 person Box 列表
         """
+        # 检测器实例可能由多路流共享，只调整本帧阈值，不修改实例配置。
+        person_min_area = self.person_min_area
+        clothes_min_area = self.clothes_min_area
         if image_width <= 1280 or image_height <= 720:
-            self.min_person_area = 4000
-            self.clothes_min_area = 2000
+            person_min_area = min(person_min_area, 4000)
+            clothes_min_area = min(clothes_min_area, 2000)
         # 1. 过滤有效 person
         persons = label_filter(predictions, ["person"])
         persons = [p for p in persons if p.source == "SAM3"]
         persons = score_filter(persons, self.person_min_score)
-        persons = area_filter(persons, self.person_min_area)
+        persons = area_filter(persons, person_min_area)
         persons = aspect_ratio_filter(persons, self.min_ratio, self.max_ratio)
 
         # 2. 过滤衣服框（pants / upper garment）
         clothes_boxes = label_filter(predictions, list(self.CLOTHES_LABELS))
         clothes_boxes = score_filter(clothes_boxes, self.clothes_min_score)
-        clothes_boxes = area_filter(clothes_boxes, self.clothes_min_area)
+        clothes_boxes = area_filter(clothes_boxes, clothes_min_area)
         clothes_boxes = aspect_ratio_filter(clothes_boxes, self.min_ratio, self.max_ratio)
         # 边缘过滤：排除紧贴图像边缘的截断/误检衣服框
         clothes_boxes = edge_filter(clothes_boxes, image_width, image_height, 0.02)
@@ -302,7 +305,9 @@ class VestDetector:
             strip_exempt = False
             invalid_strips: List[Box] = []
             for strip in strip_boxes:
-                if person.compute_mask_array(image_width, image_height) is not None:
+                person_mask = person.compute_mask_array(image_width, image_height)
+                strip_mask = strip.compute_mask_array(image_width, image_height)
+                if person_mask is not None and strip_mask is not None:
                     logger.info("Use mask iom function")
                     miom_val = person.mask_iom(strip, image_width, image_height)
                 else:
