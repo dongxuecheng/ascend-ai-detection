@@ -39,6 +39,7 @@ def detect(
 | `zone.py` | `ZoneDetector` | `8` / `204` | 危险区域闯入 | `person` |
 | `vest.py` | `VestDetector` | `10` | 未穿工服/反光衣 | `person` |
 | `smoke.py` | `SmokingDetector` | `14` | 吸烟检测 | `cigarette` |
+| `fire.py` | `FireDetector` | `16` | 火焰识别，仅保留置信度严格 > 0.6 的 fire 框，无人员、面积或时序条件 | `fire` |
 | `belt_deviation.py` | `BeltDeviationDetector` | `33` | 皮带跑偏 | `conveyor belt` |
 | `single.py` | `SingleDetector` | `34` | 单人作业/滞留 | `single_person` |
 | `car.py` | `CarDetector` | `52` | 人员在货车车厢内 | `person` + 相关 `truck bed` |

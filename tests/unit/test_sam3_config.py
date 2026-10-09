@@ -65,7 +65,7 @@ class Sam3UrlGroupTests(unittest.TestCase):
     def test_real_yaml_routes_follow_environment_overrides(self):
         loaded = self.load_config("http://refine.example:19000/predict-obj-refine")
         expected = dict.fromkeys(
-            ["8", "32", "33", "34", "52", "53", "38", "56", "49", "59", "50"],
+            ["8", "16", "32", "33", "34", "52", "53", "38", "56", "49", "59", "50"],
             "http://regular.example:18000/predict",
         )
         expected.update(dict.fromkeys(

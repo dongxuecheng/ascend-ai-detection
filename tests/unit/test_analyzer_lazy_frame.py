@@ -79,6 +79,25 @@ class AnalyzerLazyFrameTests(unittest.TestCase):
         provider.assert_not_called()
         self.assertIs(received[0], bgr)
 
+    def test_fire_algorithm_dispatches_real_detector(self):
+        from analyze.fire import FireDetector
+        from config.config import config
+        from utils.obj import Box
+
+        self.assertIn("FireDetector", self.module._DETECTOR_CLASSES)
+        self.module._DETECTOR_CLASSES["FireDetector"] = FireDetector
+        self.module._detector_class_names["16"] = config.ALGORITHM_DETECTORS["16"]
+        self.task.algorithmCode = "16"
+        provider = Mock(side_effect=AssertionError("fire rule does not need BGR"))
+        fire = Box("fire", 0.9, [10, 10, 20, 20])
+        boundary = Box("fire", 0.6, [10, 10, 20, 20])
+        flame = Box("flame", 0.99, [10, 10, 20, 20])
+        self.assertEqual(
+            self.module.analyze_for_task([fire, boundary, flame], self.task, frame_provider=provider),
+            [fire],
+        )
+        provider.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

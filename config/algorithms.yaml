@@ -1,5 +1,5 @@
 _comment: AI 视频安监检测算法配置，修改后重启代码即可生效
-supported_codes: ['0', '8', '10', '14', '32', '33', '34', '38', '49', '50', '51', '52', '53', '56', '58', '59', '60', '61', '62']
+supported_codes: ['0', '8', '10', '14', '16', '32', '33', '34', '38', '49', '50', '51', '52', '53', '56', '58', '59', '60', '61', '62']
 # supported_codes: ['10']
 
 # 可用的 GPU 编码（GPU ID）列表。
@@ -72,7 +72,7 @@ sam3_prompts:
   prompts: [person, cigarette, face]
   return_mask: false
 - code: '16'
-  prompts: [fire, flame]
+  prompts: [fire]
   return_mask: false
 - code: '32'
   prompts: [person, head, hand, face]
@@ -148,7 +148,7 @@ sam3_prompts:
 # 同一 URL 的算法码放在同一个 group 中；未在 groups 中配置的算法码将回退到 config.SAM3_URL_OBJ。
 # url_env 引用 .env 中的 SAM3 地址变量；也兼容 url 配置固定地址。
 sam3_url_groups:
-- {url_env: SAM3_URL, codes: ['8', '32', '33', '34', '52', '53', '38', '56', '49', '59', '50']}
+- {url_env: SAM3_URL, codes: ['8', '16', '32', '33', '34', '52', '53', '38', '56', '49', '59', '50']}
 - {url_env: SAM3_URL_REFINE, codes: ['0', '14', '58', '10']}
 
 fence_algorithms:
@@ -190,6 +190,7 @@ algorithm_detectors:
 - {code: '8', detectors: [ZoneDetector]}
 - {code: '10', detectors: [VestDetector]}
 - {code: '14', detectors: [SmokingDetector]}
+- {code: '16', detectors: [FireDetector]}
 - {code: '33', detectors: [BeltDeviationDetector]}
 - {code: '34', detectors: [SingleDetector]}
 - {code: '52', detectors: [CarDetector]}
@@ -230,6 +231,7 @@ algorithm_intervals:
 - {code: '8', interval: 10.0}
 - {code: '10', interval: 10.0}
 - {code: '14', interval: 10.0}
+- {code: '16', interval: 30.0}
 - {code: '33', interval: 20.0}
 - {code: '34', interval: 10.0}
 - {code: '52', interval: 10.0}

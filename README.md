@@ -65,7 +65,7 @@ YOLO/SAM3 返回空结果时，生产主流程仍调用规则分析，让脱岗�
 
 以下依据当前 `config/algorithms.yaml` 和 `src/core/analyzer.py` 整理。**“启用”表示进入本地算法允许列表，实际运行仍要求任务平台下发对应任务。** 检测间隔是任务分析的最小调度间隔，不是保证达到的帧率，也不是判定违规所需的持续时间。
 
-### 当前允许的 19 个算法
+### 当前允许的 20 个算法
 
 | 算法码 | 业务用途与实现 | 检测器 | 间隔（秒） | 拉取围栏 | SAM3 mask | VL 复核配置 |
 | --- | --- | --- | ---: | --- | --- | --- |
@@ -73,6 +73,7 @@ YOLO/SAM3 返回空结果时，生产主流程仍调用规则分析，让脱岗�
 | `8` | 危险区域闯入，使用人员及腿部目标判断 | `ZoneDetector` | 10 | 是 | 否 | 未启用 |
 | `10` | 未穿工服或反光衣 | `VestDetector` | 10 | 否 | 是 | 关闭 |
 | `14` | 吸烟 | `SmokingDetector` | 10 | 否 | 否 | 关闭 |
+| `16` | 火焰识别，`fire` 检测框置信度严格 > 0.6 即告警，不要求人员或灭火器条件 | `FireDetector` | 30 | 否 | 否 | 未启用 |
 | `32` | 睡岗候选，连续静止计数后复核 | `SleepDutyDetector` | 3 | 否 | 是 | 开启 |
 | `33` | 皮带跑偏，比较皮带 mask 与围栏 | `BeltDeviationDetector` | 20 | 是 | 是 | 未启用 |
 | `34` | 单人作业 | `SingleDetector` | 10 | 否 | 否 | 未启用 |
@@ -101,7 +102,7 @@ YOLO/SAM3 返回空结果时，生产主流程仍调用规则分析，让脱岗�
 | `204` | 区域入侵，`ZoneDetector` | 目前缺少匹配的 SAM3 prompt、围栏同步等配套配置 |
 | `205` | 安全绳/安全带，`SafetyDetector` | 有 VL prompt 配置，但缺少匹配的上游检测输入配置 |
 
-`16`、`37`、`39`、`54`、`55` 等虽然有描述或 prompt，目前没有对应的 `algorithm_detectors` 映射；只加入 `supported_codes` 不会自动获得检测功能。当前配置也没有独立的 `99` 手套任务，手套检测包含在 `200`、`201` 中。
+`37`、`39`、`54`、`55` 等虽然有描述或 prompt，目前没有对应的 `algorithm_detectors` 映射；只加入 `supported_codes` 不会自动获得检测功能。当前配置也没有独立的 `99` 手套任务，手套检测包含在 `200`、`201` 中。
 
 ## 项目结构
 
@@ -380,7 +381,7 @@ alert_dedup:
 | `alert_dedup` | 冷却秒数与位置 IoU 阈值；未配置或关闭时不执行该步 |
 | `gpu_codes` | 编排器轮询分配的 GPU 编号；当前 CPU 解码配置没有把编号传给后端，不代表已启用 GPU 解码 |
 
-YAML 用 `yaml.safe_load` 读取，不支持 `${SAM3_URL}` 形式的环境变量插值。SAM3 分组使用 `url_env` 引用 `SAM3_URL`、`SAM3_URL_REFINE` 或 `SAM3_URL_OBJ`；未知变量名或引用的地址为空时启动报错，也兼容原来的 `url` 固定地址写法。当前 `8、32、33、34、52、53、38、56、49、59、50` 使用 `SAM3_URL`，`0、14、58、10` 使用 `SAM3_URL_REFINE`。未分组算法使用 `SAM3_URL_OBJ`，该变量未设置时使用 `SAM3_URL`。
+YAML 用 `yaml.safe_load` 读取，不支持 `${SAM3_URL}` 形式的环境变量插值。SAM3 分组使用 `url_env` 引用 `SAM3_URL`、`SAM3_URL_REFINE` 或 `SAM3_URL_OBJ`；未知变量名或引用的地址为空时启动报错，也兼容原来的 `url` 固定地址写法。当前 `8、16、32、33、34、52、53、38、56、49、59、50` 使用 `SAM3_URL`，`0、14、58、10` 使用 `SAM3_URL_REFINE`。未分组算法使用 `SAM3_URL_OBJ`，该变量未设置时使用 `SAM3_URL`。
 
 纯 YOLO 输入通常通过不配置 SAM3 prompt 实现，同时必须配置 `yolo_pre_detect` 并使用支持 YOLO 标签的检测器。有一个例外：算法没有 prompt 条目、且任务 `electricFence` 非空时，代码会回退到 `person` prompt。需要明确禁用这类回退时，可给该算法配置 `prompts: []`。算法 `57` 即使上游不走 SAM3，其检测器内部仍会调用 SAM3。
 

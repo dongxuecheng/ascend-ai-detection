@@ -22,6 +22,7 @@ from analyze.sleep_duty import SleepDutyDetector
 from analyze.belt_deviation import BeltDeviationDetector
 from analyze.car import CarDetector
 from analyze.extinguisher import ExtinguisherDetector
+from analyze.fire import FireDetector
 from analyze.departure import DepartureDetector
 from analyze.play_phone import PlayPhoneDetector
 from analyze.move_phone import MoveUsePhoneDetector
@@ -52,6 +53,7 @@ _DETECTOR_CLASSES = {
     "CarDetector": CarDetector,
     "BeltDeviationDetector": BeltDeviationDetector,
     "ExtinguisherDetector": ExtinguisherDetector,
+    "FireDetector": FireDetector,
     "DepartureDetector": DepartureDetector,
     "PlayPhoneDetector": PlayPhoneDetector,
     "MoveUsePhoneDetector": MoveUsePhoneDetector,
